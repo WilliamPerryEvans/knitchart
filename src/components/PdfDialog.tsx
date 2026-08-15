@@ -1,6 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../state/store';
-import { DEFAULT_PDF_OPTIONS, estimatePages, exportPdf, type PdfOptions } from '../io/pdf';
+import {
+  DEFAULT_PDF_OPTIONS,
+  estimatePages,
+  exportPdf,
+  stitchSizeMm,
+  type PdfOptions,
+} from '../io/pdf';
 import { saveBytes } from '../io/file';
 import type { Orientation, PageSizeId } from '../domain/pageLayout';
 
@@ -18,6 +24,9 @@ const STITCH_SIZES = [
   { value: 10, label: 'Extra large — 10 mm' },
 ];
 
+/** Below this a stitch is too small to follow with a needle in your hand. */
+const TOO_SMALL_MM = 2;
+
 export function PdfDialog({ onClose }: { onClose: () => void }) {
   const chart = useStore((s) => s.chart);
   const [opts, setOpts] = useState<PdfOptions>(DEFAULT_PDF_OPTIONS);
@@ -30,6 +39,14 @@ export function PdfDialog({ onClose }: { onClose: () => void }) {
   const pages = useMemo(() => {
     try {
       return estimatePages(chart, opts);
+    } catch {
+      return 0;
+    }
+  }, [chart, opts]);
+
+  const stitchMm = useMemo(() => {
+    try {
+      return stitchSizeMm(chart, opts);
     } catch {
       return 0;
     }
@@ -87,12 +104,12 @@ export function PdfDialog({ onClose }: { onClose: () => void }) {
                 set('cellSizeMm', e.target.value === 'fit' ? 'fit' : Number(e.target.value))
               }
             >
+              <option value="fit">Fit on one page</option>
               {STITCH_SIZES.map((s) => (
                 <option key={s.value} value={s.value}>
                   {s.label}
                 </option>
               ))}
-              <option value="fit">Fit on one page</option>
             </select>
           </label>
           <label>
@@ -143,7 +160,7 @@ export function PdfDialog({ onClose }: { onClose: () => void }) {
           {pages === 0
             ? 'Stitches are too big for this page — pick a smaller size, bigger paper, or landscape.'
             : pages === 1
-              ? 'The chart fits on a single page.'
+              ? `One page. Stitches print at ${stitchMm.toFixed(1)} mm.`
               : `${pages} chart pages, to be taped together${
                   opts.overlap > 0
                     ? `. Neighbouring pages share ${opts.overlap} ${
@@ -153,6 +170,12 @@ export function PdfDialog({ onClose }: { onClose: () => void }) {
                 }`}
           {(opts.includeInstructions || opts.includeYarnEstimate) && pages > 0 && ' Extra pages follow.'}
         </p>
+        {pages === 1 && stitchMm > 0 && stitchMm < TOO_SMALL_MM && (
+          <p className="dialog-note dialog-note-tight">
+            That is small to knit from. For a chart this size, a fixed stitch size across
+            taped-together pages is easier on the eyes.
+          </p>
+        )}
         {error && <p className="dialog-error">{error}</p>}
 
         <div className="dialog-buttons">

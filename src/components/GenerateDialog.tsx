@@ -17,7 +17,16 @@ import {
 import { cellAspect } from '../model/gauge';
 
 const KINDS: Array<{ id: GeneratorKind; label: string; note: string }> = [
-  { id: 'sierpinski', label: 'Sierpinski triangle', note: 'The classic fractal triangle' },
+  {
+    id: 'sierpinski',
+    label: 'Sierpinski triangle',
+    note: 'The classic fractal triangle, one stitch wider each side per row',
+  },
+  {
+    id: 'equilateral',
+    label: 'Equilateral Sierpinski',
+    note: 'A true equilateral triangle once knitted, not on the chart squares',
+  },
   { id: 'carpet', label: 'Sierpinski carpet', note: 'Square fractal, tiles all over' },
   { id: 'rule', label: 'Cellular automaton', note: 'Rule 90 and its 255 siblings' },
   { id: 'stripes', label: 'Stripes', note: 'Two colours, two run lengths' },
@@ -63,21 +72,25 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
 
   const isAutomaton = opts.kind === 'sierpinski' || opts.kind === 'rule';
 
-  /** Options with the chart-derived seed row filled in. */
+  // The equilateral triangle needs the fabric's proportions, not the chart's.
+  const aspect = cellAspect(chart.gauge);
+
+  /** Options with the gauge and any chart-derived seed row filled in. */
   const resolved = useMemo<GeneratorOptions>(() => {
-    if (!isAutomaton || opts.seed !== 'row') return opts;
+    const base = { ...opts, aspect };
+    if (!isAutomaton || base.seed !== 'row') return base;
     // Seed from whichever end the automaton starts at.
     const gridRow = region
-      ? opts.origin === 'top'
+      ? base.origin === 'top'
         ? region.row
         : region.row + region.h - 1
-      : opts.origin === 'top'
+      : base.origin === 'top'
         ? 0
         : chart.rows - 1;
     const col = region ? region.col : 0;
     const slice = chart.grid.subarray(gridRow * chart.stitches + col, gridRow * chart.stitches + col + width);
-    return { ...opts, seedRow: seedRowFromChart(slice, width, 0, opts.bg, opts.scaleX) };
-  }, [opts, isAutomaton, region, chart.grid, chart.stitches, chart.rows, width]);
+    return { ...base, seedRow: seedRowFromChart(slice, width, 0, base.bg, base.scaleX) };
+  }, [opts, aspect, isAutomaton, region, chart.grid, chart.stitches, chart.rows, width]);
 
   const pattern = useMemo(() => {
     void randomNonce; // regenerate when the user asks for a new random seed
@@ -118,7 +131,6 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
 
   // Preview keeps the fabric's proportions, so a squashed triangle looks
   // squashed here too rather than coming as a surprise off the needles.
-  const aspect = cellAspect(chart.gauge);
   const previewH = Math.min(PREVIEW_MAX_H, Math.round((PREVIEW_W / width) * height * aspect));
 
   const apply = () => {
@@ -222,6 +234,31 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                   <option value={4}>4 — very fine</option>
                 </select>
               </label>
+            )}
+
+            {opts.kind === 'equilateral' && (
+              <>
+                <label>
+                  Levels of detail
+                  <select value={opts.depth} onChange={(e) => set('depth', Number(e.target.value))}>
+                    <option value={1}>1 — one triangle, one hole</option>
+                    <option value={2}>2 — three holes within</option>
+                    <option value={3}>3 — the usual gasket</option>
+                    <option value={4}>4 — fine</option>
+                    <option value={5}>5 — very fine</option>
+                  </select>
+                </label>
+                <label>
+                  Apex points
+                  <select
+                    value={opts.origin}
+                    onChange={(e) => set('origin', e.target.value as Origin)}
+                  >
+                    <option value="top">Up</option>
+                    <option value="bottom">Down</option>
+                  </select>
+                </label>
+              </>
             )}
 
             {opts.kind === 'stripes' && (

@@ -17,6 +17,7 @@ import {
   mmToPoints,
   pageDimensions,
   planTiles,
+  pointsToMm,
   tilePositionLabel,
   tileRangeLabel,
   type Orientation,
@@ -43,7 +44,10 @@ export interface PdfOptions {
 export const DEFAULT_PDF_OPTIONS: PdfOptions = {
   pageSize: 'letter',
   orientation: 'portrait',
-  cellSizeMm: 6,
+  // One sheet by default. A fixed stitch size prints bigger but splits a chart
+  // of any real size across pages to be taped up, which is a deliberate choice
+  // rather than something to land on by accident.
+  cellSizeMm: 'fit',
   overlap: 2,
   squareCells: false,
   includeLegend: true,
@@ -564,6 +568,75 @@ function drawYarnPage(
   }
 }
 
+/**
+ * Biggest stitch "fit on one page" will settle on. Without a cap a one-stitch
+ * chart would print a single square the size of the sheet, and there is no
+ * reason for fitting to go beyond the largest fixed size on offer.
+ */
+const MAX_FIT_MM = 10;
+
+/**
+ * Largest stitch that puts the whole chart on one page.
+ *
+ * This has to iterate. The row and stitch labels are sized from the cell, and
+ * the cell is sized from whatever the labels leave over — so fitting once
+ * produced bigger cells, which grew the gutters, which pushed the chart back
+ * off the page and silently split it in two. Gutters grow with the cell and the
+ * fit shrinks with the gutters, so remeasuring settles downward in a pass or two.
+ */
+function fittedCellWidth(chart: Chart, aspect: number, availW: number, availH: number): number {
+  const fit = (m: Metrics) =>
+    fitCellSize({
+      stitches: chart.stitches,
+      rows: chart.rows,
+      aspect,
+      availW,
+      availH,
+      gutterLeft: m.gutterLeft,
+      gutterRight: m.gutterRight,
+      gutterBottom: m.gutterBottom,
+    });
+
+  let cellW = fit(metricsFor(chart, 12, 12 * aspect));
+  for (let i = 0; i < 6; i++) {
+    const next = fit(metricsFor(chart, cellW, cellW * aspect));
+    if (!Number.isFinite(next) || next >= cellW) break;
+    cellW = next;
+  }
+  // A hair of slack absorbs floating point, so the `floor` in `cellsPerPage`
+  // can't come up one stitch short of the chart it was just sized for.
+  return Math.min(cellW * 0.999, mmToPoints(MAX_FIT_MM));
+}
+
+/**
+ * Page geometry and the stitch width the options imply. Shared by the export,
+ * the page-count estimate, and the dialog's "stitches print at N mm" note, so
+ * the three can't drift apart.
+ */
+function planFor(chart: Chart, opts: PdfOptions) {
+  const { width: pageW, height: pageH } = pageDimensions(opts.pageSize, opts.orientation);
+  const footerH = footerHeight(chart, opts.includeLegend);
+  const availW = pageW - MARGIN * 2;
+  const availH = pageH - MARGIN * 2 - HEADER_H - footerH;
+  const aspect = opts.squareCells ? 1 : cellAspect(chart.gauge);
+  const cellW =
+    opts.cellSizeMm === 'fit'
+      ? fittedCellWidth(chart, aspect, availW, availH)
+      : mmToPoints(opts.cellSizeMm);
+  return { pageW, pageH, availW, availH, aspect, cellW };
+}
+
+/**
+ * How wide a stitch will actually print, in millimetres. With 'fit' this is
+ * whatever it took to get the chart onto one sheet, which the dialog needs to
+ * report — squeezing a 200-stitch chart onto letter leaves stitches too small
+ * to knit from.
+ */
+export function stitchSizeMm(chart: Chart, options: Partial<PdfOptions> = {}): number {
+  const { cellW } = planFor(chart, { ...DEFAULT_PDF_OPTIONS, ...options });
+  return Number.isFinite(cellW) && cellW > 0 ? pointsToMm(cellW) : 0;
+}
+
 /** Render the chart to a print-ready PDF. Returns the file bytes. */
 export async function exportPdf(chart: Chart, options: Partial<PdfOptions> = {}): Promise<Uint8Array> {
   const opts = { ...DEFAULT_PDF_OPTIONS, ...options };
@@ -573,27 +646,9 @@ export async function exportPdf(chart: Chart, options: Partial<PdfOptions> = {})
     bold: await doc.embedFont(StandardFonts.HelveticaBold),
   };
 
-  const { width: pageW, height: pageH } = pageDimensions(opts.pageSize, opts.orientation);
-  const footerH = footerHeight(chart, opts.includeLegend);
-  const availW = pageW - MARGIN * 2;
-  const availH = pageH - MARGIN * 2 - HEADER_H - footerH;
-  const aspect = opts.squareCells ? 1 : cellAspect(chart.gauge);
-
-  // Provisional metrics to size the gutters, which then constrain the cells.
-  const probe = metricsFor(chart, 12, 12 * aspect);
-  let cellW =
-    opts.cellSizeMm === 'fit'
-      ? fitCellSize({
-          stitches: chart.stitches,
-          rows: chart.rows,
-          aspect,
-          availW,
-          availH,
-          gutterLeft: probe.gutterLeft,
-          gutterRight: probe.gutterRight,
-          gutterBottom: probe.gutterBottom,
-        })
-      : mmToPoints(opts.cellSizeMm);
+  const plan = planFor(chart, opts);
+  const { pageW, pageH, availW, availH, aspect } = plan;
+  let cellW = plan.cellW;
   if (!Number.isFinite(cellW) || cellW <= 0) cellW = mmToPoints(4);
 
   const m = metricsFor(chart, cellW, cellW * aspect);
@@ -663,25 +718,7 @@ export async function exportPdf(chart: Chart, options: Partial<PdfOptions> = {})
 /** Page count without building the document, for the export dialog's preview. */
 export function estimatePages(chart: Chart, options: Partial<PdfOptions> = {}): number {
   const opts = { ...DEFAULT_PDF_OPTIONS, ...options };
-  const { width: pageW, height: pageH } = pageDimensions(opts.pageSize, opts.orientation);
-  const footerH = footerHeight(chart, opts.includeLegend);
-  const availW = pageW - MARGIN * 2;
-  const availH = pageH - MARGIN * 2 - HEADER_H - footerH;
-  const aspect = opts.squareCells ? 1 : cellAspect(chart.gauge);
-  const probe = metricsFor(chart, 12, 12 * aspect);
-  const cellW =
-    opts.cellSizeMm === 'fit'
-      ? fitCellSize({
-          stitches: chart.stitches,
-          rows: chart.rows,
-          aspect,
-          availW,
-          availH,
-          gutterLeft: probe.gutterLeft,
-          gutterRight: probe.gutterRight,
-          gutterBottom: probe.gutterBottom,
-        })
-      : mmToPoints(opts.cellSizeMm);
+  const { availW, availH, aspect, cellW } = planFor(chart, opts);
   if (!Number.isFinite(cellW) || cellW <= 0) return 0;
   const m = metricsFor(chart, cellW, cellW * aspect);
   return planTiles({

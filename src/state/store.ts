@@ -14,12 +14,24 @@ import {
   placeRegion,
   resizeByEdges as resizeGridByEdges,
   resizeGrid,
+  rotateRegionCells,
+  rotatedPlacement,
   type Anchor,
   type Edges,
   type MirrorAxis,
+  type QuarterTurns,
   type Region,
   type RegionData,
 } from '../domain/region';
+
+/**
+ * How a paste lands. 'replace' overwrites everything under the clipboard;
+ * 'over' lets stitches of the background colour show what was already there.
+ */
+export type PasteMode = 'replace' | 'over';
+
+/** The palette slot treated as see-through when pasting on top. */
+export const BACKGROUND_INDEX = 0;
 
 export type Tool = 'pencil' | 'fill' | 'eyedropper' | 'rect' | 'line' | 'select';
 
@@ -90,6 +102,8 @@ interface EditorState {
   selection: Region | null;
   /** App-internal copy buffer (not the OS clipboard). */
   clipboard: RegionData | null;
+  /** Sticky choice, so Ctrl+V keeps doing whatever you picked last. */
+  pasteMode: PasteMode;
   /** Live-mirror painted stitches across the chart's centre lines. */
   mirrorAxis: MirrorAxis;
 
@@ -133,8 +147,11 @@ interface EditorState {
   setSelection: (region: Region | null) => void;
   moveSelection: (toRow: number, toCol: number) => void;
   copySelection: () => void;
-  pasteClipboard: (row?: number, col?: number) => void;
+  setPasteMode: (mode: PasteMode) => void;
+  pasteClipboard: (row?: number, col?: number, mode?: PasteMode) => void;
   mirrorSelection: (axis: 'horizontal' | 'vertical') => void;
+  /** Turn the selection clockwise by quarter turns. Right angles only. */
+  rotateSelection: (turns: QuarterTurns) => void;
   fillSelection: (color: number) => void;
   clearSelection: () => void;
 
@@ -184,6 +201,20 @@ interface EditorState {
 
 function recompute(chart: Chart): FloatWarning[] {
   return checkChartFloats(chart);
+}
+
+/**
+ * Add cells to the pending repaint list rather than replacing it.
+ *
+ * React can coalesce several grid mutations into one render, and the canvas
+ * reads `dirtyCells` once per render — so overwriting the list drops the
+ * earlier edits' repaints and leaves stitches stale on screen until something
+ * forces a full rebuild. `null` means "repaint everything", which already
+ * covers whatever is being added.
+ */
+function addDirty(previous: number[] | null, cells: number[]): number[] | null {
+  if (previous === null) return null;
+  return previous.length === 0 ? cells : [...previous, ...cells];
 }
 
 /**
@@ -242,6 +273,7 @@ export const useStore = create<EditorState>((set, get) => ({
 
   selection: null,
   clipboard: null,
+  pasteMode: 'replace',
   mirrorAxis: 'none',
 
   undoStack: [],
@@ -383,16 +415,25 @@ export const useStore = create<EditorState>((set, get) => ({
     });
   },
 
-  pasteClipboard: (row, col) => {
-    const { chart, clipboard, selection } = get();
+  setPasteMode: (pasteMode) => set({ pasteMode }),
+
+  pasteClipboard: (row, col, mode) => {
+    const { chart, clipboard, selection, pasteMode } = get();
     if (!clipboard || clipboard.w === 0) return;
     const size = { stitches: chart.stitches, rows: chart.rows };
     // Default to the current selection's corner, else the top-left.
     const r = row ?? selection?.row ?? 0;
     const c = col ?? selection?.col ?? 0;
-    const cells = placeRegion(clipboard, size, r, c);
+    const how = mode ?? pasteMode;
+    const cells = placeRegion(
+      clipboard,
+      size,
+      r,
+      c,
+      how === 'over' ? BACKGROUND_INDEX : undefined
+    );
     if (cells.length === 0) return;
-    get().applyCells('Paste', cells);
+    get().applyCells(how === 'over' ? 'Paste on top' : 'Paste', cells);
     set({ selection: clampRegion({ row: r, col: c, w: clipboard.w, h: clipboard.h }, size) });
   },
 
@@ -407,6 +448,17 @@ export const useStore = create<EditorState>((set, get) => ({
       axis === 'horizontal' ? 'Mirror selection ↔' : 'Mirror selection ↕',
       placeRegion(flipped, size, selection.row, selection.col)
     );
+  },
+
+  rotateSelection: (turns) => {
+    const { chart, selection } = get();
+    if (!selection || turns % 4 === 0) return;
+    const size = { stitches: chart.stitches, rows: chart.rows };
+    const cells = rotateRegionCells(chart.grid, size, selection, turns);
+    if (cells.length === 0) return;
+    get().applyCells(turns === 2 ? 'Rotate 180°' : 'Rotate 90°', cells);
+    const at = rotatedPlacement(selection, size, turns);
+    set({ selection: clampRegion(at, size) });
   },
 
   fillSelection: (color) => {
@@ -438,7 +490,11 @@ export const useStore = create<EditorState>((set, get) => ({
       touched.push(i);
     }
     if (touched.length > 0) {
-      set({ gridVersion: get().gridVersion + 1, dirtyCells: touched, dirty: true });
+      set({
+        gridVersion: get().gridVersion + 1,
+        dirtyCells: addDirty(get().dirtyCells, touched),
+        dirty: true,
+      });
     }
   },
 
@@ -480,7 +536,10 @@ export const useStore = create<EditorState>((set, get) => ({
     for (const d of diffs) chart.grid[d.i] = d.after;
     set({
       gridVersion: get().gridVersion + 1,
-      dirtyCells: diffs.map((d) => d.i),
+      dirtyCells: addDirty(
+        get().dirtyCells,
+        diffs.map((d) => d.i)
+      ),
       dirty: true,
       undoStack: [...undoStack.slice(-(MAX_HISTORY - 1)), { kind: 'cells', label, diffs }],
       redoStack: [],
@@ -535,7 +594,10 @@ export const useStore = create<EditorState>((set, get) => ({
     set({
       ...rest,
       gridVersion: get().gridVersion + 1,
-      dirtyCells: cmd.diffs.map((d) => d.i),
+      dirtyCells: addDirty(
+        get().dirtyCells,
+        cmd.diffs.map((d) => d.i)
+      ),
       dirty: true,
       floatWarnings: recomputeTouched(
         chart,
@@ -559,7 +621,10 @@ export const useStore = create<EditorState>((set, get) => ({
     set({
       ...rest,
       gridVersion: get().gridVersion + 1,
-      dirtyCells: cmd.diffs.map((d) => d.i),
+      dirtyCells: addDirty(
+        get().dirtyCells,
+        cmd.diffs.map((d) => d.i)
+      ),
       dirty: true,
       floatWarnings: recomputeTouched(
         chart,

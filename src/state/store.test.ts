@@ -223,6 +223,43 @@ describe('resize', () => {
   });
 });
 
+describe('dirty cell tracking', () => {
+  it('accumulates repaints instead of dropping all but the last', () => {
+    // The canvas reads dirtyCells once per render, and React can coalesce
+    // several edits into one — so replacing the list would leave stitches
+    // painted in the store but stale on screen.
+    freshChart(8, 8);
+    useStore.setState({ dirtyCells: [] });
+    const s = useStore.getState();
+    s.beginStroke();
+    for (let c = 0; c < 6; c++) s.paintCell(c, 1);
+    s.endStroke('Pencil');
+    expect(useStore.getState().dirtyCells).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('keeps a pending full rebuild rather than narrowing it to a few cells', () => {
+    freshChart(8, 8);
+    expect(useStore.getState().dirtyCells).toBeNull(); // a new chart repaints all
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1);
+    s.endStroke('Pencil');
+    expect(useStore.getState().dirtyCells).toBeNull();
+  });
+
+  it('carries undo and redo repaints through the same list', () => {
+    freshChart(8, 8);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(3, 1);
+    s.endStroke('Pencil');
+    useStore.setState({ dirtyCells: [] });
+    useStore.getState().undo();
+    useStore.getState().redo();
+    expect(useStore.getState().dirtyCells).toEqual([3, 3]);
+  });
+});
+
 describe('selection', () => {
   it('moves a region as one undo step, clearing the source', () => {
     freshChart(4, 4);
@@ -260,6 +297,87 @@ describe('selection', () => {
     const c = useStore.getState().chart;
     expect(c.grid[0]).toBe(1); // original still there
     expect(c.grid[3 * 4 + 3]).toBe(1); // and the copy
+  });
+
+  it('pastes on top without disturbing what is underneath', () => {
+    freshChart(4, 4);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1); // the motif: one stitch, on a background of index 0
+    s.paintCell(2 * 4 + 1, 2); // something already on the chart, under the paste
+    s.endStroke('Pencil');
+
+    useStore.getState().setSelection({ row: 0, col: 0, w: 2, h: 2 });
+    useStore.getState().copySelection();
+    useStore.getState().pasteClipboard(2, 0, 'over');
+
+    const c = useStore.getState().chart;
+    expect(c.grid[2 * 4 + 0]).toBe(1); // the motif landed
+    expect(c.grid[2 * 4 + 1]).toBe(2); // ...and the stitch beneath survived
+  });
+
+  it('replaces everything under the clipboard in the default mode', () => {
+    freshChart(4, 4);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1);
+    s.paintCell(2 * 4 + 1, 2);
+    s.endStroke('Pencil');
+
+    useStore.getState().setSelection({ row: 0, col: 0, w: 2, h: 2 });
+    useStore.getState().copySelection();
+    useStore.getState().pasteClipboard(2, 0, 'replace');
+
+    expect(useStore.getState().chart.grid[2 * 4 + 1]).toBe(0); // wiped to background
+  });
+
+  it('follows the sticky paste mode when none is given', () => {
+    freshChart(4, 4);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1);
+    s.paintCell(2 * 4 + 1, 2);
+    s.endStroke('Pencil');
+
+    useStore.getState().setSelection({ row: 0, col: 0, w: 2, h: 2 });
+    useStore.getState().copySelection();
+    useStore.getState().setPasteMode('over');
+    useStore.getState().pasteClipboard(2, 0);
+
+    expect(useStore.getState().chart.grid[2 * 4 + 1]).toBe(2);
+  });
+
+  it('rotates a selection as one undo step and follows it with the marquee', () => {
+    freshChart(4, 4);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1);
+    s.paintCell(1, 1);
+    s.paintCell(2, 1); // a 3-stitch horizontal bar along the top
+    s.endStroke('Pencil');
+    const undoDepth = useStore.getState().undoStack.length;
+
+    useStore.getState().setSelection({ row: 0, col: 0, w: 3, h: 1 });
+    useStore.getState().rotateSelection(1);
+
+    expect(useStore.getState().undoStack).toHaveLength(undoDepth + 1);
+    const sel = useStore.getState().selection;
+    expect({ w: sel?.w, h: sel?.h }).toEqual({ w: 1, h: 3 }); // stood on end
+    const c = useStore.getState().chart;
+    const painted = [...c.grid].filter((v) => v === 1).length;
+    expect(painted).toBe(3); // no stitches lost
+
+    useStore.getState().undo();
+    const back = useStore.getState().chart;
+    expect([back.grid[0], back.grid[1], back.grid[2]]).toEqual([1, 1, 1]);
+  });
+
+  it('ignores a rotate with nothing selected', () => {
+    freshChart(4, 4);
+    useStore.getState().clearSelection();
+    const depth = useStore.getState().undoStack.length;
+    useStore.getState().rotateSelection(1);
+    expect(useStore.getState().undoStack).toHaveLength(depth);
   });
 
   it('clips a selection to the chart', () => {

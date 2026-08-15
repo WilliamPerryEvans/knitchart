@@ -199,12 +199,18 @@ export function extractRegion(grid: Uint8Array, size: GridSize, region: Region):
 /**
  * Cell changes that would stamp `data` down with its top-left at (row, col).
  * Anything past an edge is clipped away rather than wrapping.
+ *
+ * Pass `transparent` to leave stitches of that colour out of the result, so
+ * whatever is already on the chart shows through — "paste on top" rather than
+ * "paste over". Leaving it undefined replaces every stitch, which is what
+ * moving and mirroring a region want.
  */
 export function placeRegion(
   data: RegionData,
   size: GridSize,
   row: number,
-  col: number
+  col: number,
+  transparent?: number
 ): CellChange[] {
   const out: CellChange[] = [];
   for (let r = 0; r < data.h; r++) {
@@ -213,7 +219,9 @@ export function placeRegion(
     for (let c = 0; c < data.w; c++) {
       const gc = col + c;
       if (gc < 0 || gc >= size.stitches) continue;
-      out.push({ i: gr * size.stitches + gc, color: data.cells[r * data.w + c] });
+      const color = data.cells[r * data.w + c];
+      if (transparent !== undefined && color === transparent) continue;
+      out.push({ i: gr * size.stitches + gc, color });
     }
   }
   return out;
@@ -288,6 +296,79 @@ export function mirrorRegionV(data: RegionData): RegionData {
 
 export function rotateRegion180(data: RegionData): RegionData {
   return mirrorRegionV(mirrorRegionH(data));
+}
+
+/** Number of quarter turns clockwise. */
+export type QuarterTurns = 0 | 1 | 2 | 3;
+
+/**
+ * Rotate by quarter turns clockwise. Only right angles are offered: any other
+ * angle would have to resample the grid, and half a stitch does not exist — the
+ * edges come out ragged and the chart stops being knittable.
+ */
+export function rotateRegion90(data: RegionData, turns: QuarterTurns): RegionData {
+  const t = ((turns % 4) + 4) % 4;
+  if (t === 0) return { w: data.w, h: data.h, cells: Uint8Array.from(data.cells) };
+  if (t === 2) return rotateRegion180(data);
+  const w = data.h;
+  const h = data.w;
+  const cells = new Uint8Array(data.cells.length);
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      // clockwise: destination (r, c) comes from source (h - 1 - c, r)
+      const [sr, sc] = t === 1 ? [data.h - 1 - c, r] : [c, data.w - 1 - r];
+      cells[r * w + c] = data.cells[sr * data.w + sc];
+    }
+  }
+  return { w, h, cells };
+}
+
+/** Where a rotated region lands: same centre, clamped so it starts on the chart. */
+export function rotatedPlacement(
+  region: Region,
+  size: GridSize,
+  turns: QuarterTurns
+): { row: number; col: number; w: number; h: number } {
+  const swapped = turns % 2 !== 0;
+  const w = swapped ? region.h : region.w;
+  const h = swapped ? region.w : region.h;
+  const row = Math.round(region.row + region.h / 2 - h / 2);
+  const col = Math.round(region.col + region.w / 2 - w / 2);
+  return {
+    row: Math.max(0, Math.min(row, Math.max(0, size.rows - h))),
+    col: Math.max(0, Math.min(col, Math.max(0, size.stitches - w))),
+    w,
+    h,
+  };
+}
+
+/**
+ * Cell changes that rotate a region in place: the old footprint is cleared to
+ * `bg`, then the turned copy is stamped down centred on the same point. Follows
+ * `moveRegionCells` — overlap lets the stamped copy win, and each cell appears
+ * only once.
+ */
+export function rotateRegionCells(
+  grid: Uint8Array,
+  size: GridSize,
+  region: Region,
+  turns: QuarterTurns,
+  bg = 0
+): CellChange[] {
+  const clamped = clampRegion(region, size);
+  if (!clamped || turns % 4 === 0) return [];
+  const rotated = rotateRegion90(extractRegion(grid, size, clamped), turns);
+  const at = rotatedPlacement(clamped, size, turns);
+  const byIndex = new Map<number, number>();
+  for (let r = 0; r < clamped.h; r++) {
+    for (let c = 0; c < clamped.w; c++) {
+      byIndex.set((clamped.row + r) * size.stitches + (clamped.col + c), bg);
+    }
+  }
+  for (const change of placeRegion(rotated, size, at.row, at.col)) {
+    byIndex.set(change.i, change.color);
+  }
+  return [...byIndex].map(([i, color]) => ({ i, color }));
 }
 
 export type MirrorAxis = 'none' | 'vertical' | 'horizontal' | 'both';

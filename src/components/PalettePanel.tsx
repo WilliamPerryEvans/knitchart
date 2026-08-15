@@ -20,6 +20,19 @@ export function PalettePanel() {
             className={c.id === activeColor ? 'palette-row active' : 'palette-row'}
             onClick={() => useStore.getState().setActiveColor(c.id)}
           >
+            {/* The swatch opens the color picker, so picking a color to paint
+                with needs its own target. */}
+            <button
+              className={c.id === activeColor ? 'palette-pick on' : 'palette-pick'}
+              title={`Paint with ${c.name || `color ${c.id}`}`}
+              aria-pressed={c.id === activeColor}
+              onClick={(e) => {
+                e.stopPropagation();
+                useStore.getState().setActiveColor(c.id);
+              }}
+            >
+              {c.id === activeColor ? '●' : ''}
+            </button>
             <input
               type="color"
               value={c.hex}

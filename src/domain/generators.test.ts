@@ -7,10 +7,12 @@ import {
   gaugeRowScale,
   generateCarpet,
   generateChecks,
+  generateEquilateral,
   generatePattern,
   generateRule,
   generateStripes,
   generatorLabel,
+  inGasket,
   ruleTable,
   scaleGrid,
   seedCells,
@@ -213,6 +215,90 @@ describe('carpetCell', () => {
     const cells = generateCarpet(12, 9, 2);
     expect(show(cells, 12)[0]).toBe('############');
     expect(show(cells, 12)[4]).toBe('...#.##.#...');
+  });
+});
+
+describe('inGasket', () => {
+  it('keeps all three corners at every depth', () => {
+    for (const depth of [0, 1, 3, 6]) {
+      expect(inGasket(1, 0, 0, depth)).toBe(true);
+      expect(inGasket(0, 1, 0, depth)).toBe(true);
+      expect(inGasket(0, 0, 1, depth)).toBe(true);
+    }
+  });
+
+  it('punches out the middle from depth 1', () => {
+    const third = 1 / 3;
+    expect(inGasket(third, third, third, 0)).toBe(true); // depth 0 = solid triangle
+    expect(inGasket(third, third, third, 1)).toBe(false);
+    expect(inGasket(third, third, third, 4)).toBe(false);
+  });
+
+  it('rejects points outside the triangle', () => {
+    expect(inGasket(1.2, -0.1, -0.1, 3)).toBe(false);
+  });
+
+  it('keeps the midpoint of an edge, which belongs to two corner sub-triangles', () => {
+    expect(inGasket(0.5, 0.5, 0, 3)).toBe(true);
+  });
+});
+
+describe('generateEquilateral', () => {
+  /** Widest run of pattern cells in a row, and which row it is. */
+  function widestRow(cells: Uint8Array, width: number, height: number) {
+    let best = { row: -1, count: 0 };
+    for (let r = 0; r < height; r++) {
+      let count = 0;
+      for (let c = 0; c < width; c++) if (cells[r * width + c]) count++;
+      if (count > best.count) best = { row: r, count };
+    }
+    return best;
+  }
+
+  it('comes out equilateral in the finished fabric, not on the chart squares', () => {
+    // Worsted: cells are 0.77 as tall as they are wide.
+    const aspect = 20 / 26;
+    const width = 80;
+    const height = 80;
+    const cells = generateEquilateral(width, height, 1, aspect);
+
+    // The base is the widest row; the apex is the topmost occupied one.
+    const base = widestRow(cells, width, height);
+    let firstRow = height;
+    for (let r = 0; r < height; r++) {
+      for (let c = 0; c < width; c++) {
+        if (cells[r * width + c]) {
+          firstRow = Math.min(firstRow, r);
+          break;
+        }
+      }
+    }
+    const baseWidth = base.count; // in cell widths
+    const triHeight = (base.row - firstRow + 1) * aspect; // also in cell widths
+    expect(triHeight / baseWidth).toBeCloseTo(Math.sqrt(3) / 2, 1);
+  });
+
+  it('widens toward the base, with the central triangle bitten out', () => {
+    const rows = show(generateEquilateral(27, 27, 1, 1), 27);
+    const counts = rows.map((r) => r.split('#').length - 1);
+    // The triangle is centred, so the top rows sit above the apex and are bare.
+    const first = counts.findIndex((n) => n > 0);
+    const last = counts.length - 1 - [...counts].reverse().findIndex((n) => n > 0);
+    expect(first).toBeGreaterThan(0);
+    expect(counts[last]).toBeGreaterThan(counts[first]);
+    // Somewhere below halfway a row reads stitches, gap, stitches — the hole.
+    expect(rows.some((r) => /#+\.+#+/.test(r))).toBe(true);
+  });
+
+  it('gets holier as the depth increases', () => {
+    const count = (d: number) =>
+      generateEquilateral(60, 60, d, 1).reduce((n, v) => n + v, 0);
+    expect(count(1)).toBeGreaterThan(count(2));
+    expect(count(2)).toBeGreaterThan(count(3));
+  });
+
+  it('survives a degenerate gauge without dividing by zero', () => {
+    expect(() => generateEquilateral(10, 10, 3, 0)).not.toThrow();
   });
 });
 

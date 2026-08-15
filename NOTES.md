@@ -26,7 +26,7 @@ repeat generation. The roadmap agreed with the user:
 ```bash
 npm install
 npm run dev          # browser at localhost:5173
-npm test             # vitest, 286 unit tests
+npm test             # vitest, 318 unit tests
 npx tauri dev        # desktop app with hot reload
 npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
 ```
@@ -109,16 +109,51 @@ and scroll alone.
 
 **Selection is a plain region, and all its operations are `cells` commands.**
 `domain/region.ts` holds the pure geometry (extract, place with clipping, move,
-mirror, rotate, fill), so move/copy/paste/flip all route through the existing
-`applyCells` and need no new undo machinery. Moving clears the vacated stitches
-to palette index 0, the documented background slot. Escape or a click outside
-deselects — the first person to use the app assumed the float highlighting was a
+mirror, rotate, fill), so move/copy/paste/flip/turn all route through the
+existing `applyCells` and need no new undo machinery. Moving clears the vacated
+stitches to palette index 0, the documented background slot. Escape, a click
+inside the grid but outside the marquee, or a click off the grid entirely all
+deselect — the first person to use the app assumed the float highlighting was a
 selection and expected exactly that, so the real selection honors it.
+
+**Rotation snaps to right angles, deliberately.** Any other angle has to
+resample the grid, and half a stitch does not exist: the edges come out ragged
+and the chart stops being knittable. The drag grip off the selection's top-right
+corner measures the pointer's angle about the selection centre and rounds to the
+nearest quarter turn, so free dragging still feels natural; ↻ / ↺ buttons in the
+selection bar do the same thing precisely. `rotateRegionCells` follows
+`moveRegionCells` — clear the old footprint, stamp the turned copy centred on
+the same point, dedupe through a `Map` — and `rotatedPlacement` nudges the
+result back onto the chart when a turned oblong would hang off an edge.
+
+**Paste has two modes.** 'replace' overwrites everything under the clipboard;
+'over' treats palette index 0 as see-through so a motif can be laid on top of
+existing stitches. `placeRegion` takes an optional `transparent` index and omits
+those cells from the changes it returns — leaving it undefined keeps the
+replace behaviour that moving and mirroring depend on. The choice is sticky in
+the store so Ctrl+V keeps doing whatever was picked last.
+
+**The palette swatch opens the colour picker, so picking a colour to paint with
+needs its own button.** Each row starts with a small round `.palette-pick`; the
+row itself still works, but the most obvious target used to be the one that did
+something else.
 
 **The PDF is the print path; there is no separate print stylesheet.** A browser
 print of the canvas cannot tile a 100-stitch chart across sheets, so Ctrl+P opens
 the PDF dialog instead. Keeping one layout engine means paper always matches
 what the dialog promised.
+
+**It fits on one page by default**, and the dialog says what that cost
+("One page. Stitches print at 3.0 mm.") because squeezing a big chart onto letter
+can leave stitches too small to follow — under 2 mm it suggests a fixed size
+across taped pages instead. Fixing the default exposed a bug in `'fit'` that had
+been there since it was written: gutters are sized from the cell and the cell is
+sized from what the gutters leave, so fitting once produced bigger cells, bigger
+labels, and a chart that no longer fit — silently splitting in two.
+`fittedCellWidth` iterates to a fixed point (gutters grow with the cell, the fit
+shrinks with the gutters, so it settles downward), shaves a hair off for
+floating point, and caps at 10 mm so a one-stitch chart doesn't print a square
+the size of the sheet.
 
 Page geometry is deliberately identical on every page — fixed header, fixed
 footer holding the key and gauge line, grid in between — so tiles line up and
@@ -184,6 +219,19 @@ The Sierpinski carpet tiles *in phase*: `tileOffset` centres a whole number of
 motifs on the chart, so a 54-stitch chart gets two intact 27-stitch carpets
 rather than a repeat sliced at an arbitrary column.
 
+**The equilateral triangle is geometric, not cellular, and equilateral in the
+fabric.** Rule 90 grows one column per side per row, which on worsted knits up
+as a wide flat wedge — right maths, wrong shape for a garment panel. The
+`'equilateral'` generator instead works in units of one cell width (a cell being
+`1` wide and `aspect` tall), fits the largest true equilateral triangle inside
+the chart's real proportions, and tests each stitch's centre against the gasket
+with `inGasket` — barycentric coordinates, halved into whichever corner
+sub-triangle the point falls in, or rejected if it lands in the central inverted
+one. Measured on a 60×78 worsted chart the result is 12.0 in across and 10.3 in
+tall: a ratio of 0.859 against the ideal 0.866, the difference being whole
+stitches. On the chart *squares* it reads 1.12, which is the point — a triangle
+that looks equilateral on graph paper does not knit up equilateral.
+
 **Pan comes from a real scroll container, not a stored offset.** The canvases sit
 inside `.editor-scroll` as a `position: sticky` layer sized to the viewport,
 over a spacer sized to the zoomed chart — so the browser draws genuine
@@ -209,7 +257,17 @@ and the preset dropdown just shows whichever entry matches, or "Custom".
 **Rendering is a 1px-per-cell offscreen canvas scaled up**, not per-cell
 fillRect. The `ImageData` persists between edits and only cells listed in
 `store.dirtyCells` are rewritten (`dirtyCells: null` forces a full rebuild, used
-for new/loaded charts and palette hex changes). Two stacked canvases: the base
+for new/loaded charts and palette hex changes).
+
+**`dirtyCells` accumulates; the canvas drains it.** It used to be replaced on
+every mutation, which quietly lost repaints: React can coalesce several grid
+edits into one render, and the canvas reads the list once per render, so only
+the last edit's cells reached the screen. Six `paintCell` calls in one task left
+five stitches painted in the store but invisible on the chart. `addDirty` now
+appends (and keeps `null`, since a pending full rebuild already covers
+everything), and the canvas effect empties the list after consuming it — which
+is also what keeps it from growing without bound. A browser check confirms it
+stays at one stroke's worth while painting a 300-wide chart. Two stacked canvases: the base
 holds the chart + grid + row numbers, the overlay holds float warnings, hover
 cursor, and shape previews, so UI chrome never repaints the chart.
 
@@ -255,7 +313,7 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Testing
 
-- `npm test` — 286 unit tests. pdf-lib runs in Node, so the PDF export is tested
+- `npm test` — 318 unit tests. pdf-lib runs in Node, so the PDF export is tested
   directly: page counts against the built document, paper sizes, unencodable
   titles, and that the dialog's page estimate always matches what gets saved.
   The rest cover the pure functions: RLE encode/decode
@@ -263,12 +321,13 @@ agreement, and every cell referencing a palette entry that exists.
   wrap, thresholds, incremental vs full rescan), label conventions (row/stitch
   numbering, RS/WS, label thinning), yarn-weight presets, region geometry
   (resize per anchor, crop bounds, extract/place with clipping, overlapping
-  moves, mirroring), the pattern generators (rule-table decoding, rule 90 checked
-  against binomial coefficients mod 2, wrap vs plain edges, re-seeding, carpet
-  recursion and tiling phase, scaling, gauge row scale), and the store's stroke
-  coalescing, undo/redo, resize undo, selection ops, and palette index remapping.
-  The automaton tests inject the random source so a "random seed" run is
-  reproducible.
+  moves, mirroring, quarter turns, see-through placement), the pattern generators
+  (rule-table decoding, rule 90 checked against binomial coefficients mod 2, wrap
+  vs plain edges, re-seeding, carpet recursion and tiling phase, the equilateral
+  gasket measured against the gauge, scaling, gauge row scale), and the store's
+  stroke coalescing, undo/redo, resize undo, selection ops, paste modes, rotation,
+  dirty-cell accumulation, and palette index remapping. The automaton tests inject
+  the random source so a "random seed" run is reproducible.
 - Browser smoke test (not in the repo — it lives in the session scratchpad):
   drives the real app with puppeteer-core against Edge, checking drag-paint,
   undo/redo via keyboard, flood fill, eyedropper, rectangle, the square-grid
@@ -276,7 +335,9 @@ agreement, and every cell referencing a palette entry that exists.
   rate. It relies on `window.__knitStore` (from `src/state/store.ts`) and
   `window.__knitView.cellPoint(row, col)` (from `CanvasEditor`, which turns a
   stitch into a screen point using the editor's own view maths so the test can't
-  drift from it). Both are exposed **only under `import.meta.env.DEV`**.
+  drift from it), plus `__knitView.rotateGrip()` for the same reason — guessing
+  at the grip's position from a cell centre put the drag inside the selection and
+  moved it instead. All are exposed **only under `import.meta.env.DEV`**.
 - `puppeteer.launch()` fails to hand off in this environment. Start Edge
   separately with `--remote-debugging-port=9333 --headless=new` and use
   `puppeteer.connect({ browserURL })`. Kill stray `msedge` processes between

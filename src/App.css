@@ -256,6 +256,34 @@ select:focus {
 .selection-bar button {
   font-size: 12px;
   padding: 3px 8px;
+  white-space: nowrap;
+}
+
+/* paired Replace / On top buttons, reading as one control */
+.selection-modes {
+  display: inline-flex;
+  margin-right: 2px;
+}
+
+.selection-bar .seg {
+  padding: 3px 7px;
+  border-radius: 0;
+  color: var(--text-dim);
+}
+
+.selection-bar .seg:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.selection-bar .seg:last-child {
+  border-radius: 0 4px 4px 0;
+  border-left-width: 0;
+}
+
+.selection-bar .seg.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .editor-hint {
@@ -335,6 +363,25 @@ select:focus {
 .palette-name {
   flex: 1;
   min-width: 0;
+}
+
+/* "paint with this color" — the swatch next to it opens the color picker */
+.palette-pick {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.palette-pick.on {
+  border-color: var(--accent);
 }
 
 .palette-active-mark {

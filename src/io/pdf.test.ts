@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
-import { estimatePages, exportPdf, type PdfOptions } from './pdf';
+import { estimatePages, exportPdf, stitchSizeMm, type PdfOptions } from './pdf';
 import { stitchCounts } from '../domain/yarnEstimate';
 import { createChart, type Chart } from '../model/types';
 
@@ -104,8 +104,18 @@ describe('appended sections', () => {
   });
 
   it('flows long instructions onto further pages', async () => {
-    const short = await pageCount(await exportPdf(chartWith(20, 20), { includeInstructions: true }));
-    const long = await pageCount(await exportPdf(chartWith(20, 200), { includeInstructions: true }));
+    // Rows must be distinct AND aperiodic: identical rows merge into one
+    // instruction block, and a repeating chart collapses to one cycle plus
+    // "repeat rows 1-N". Writing the row number out in binary gives neither.
+    const varied = (rows: number) => {
+      const chart = createChart({ title: 'Varied', stitches: 20, rows, gauge, direction: 'flat' });
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < 20; c++) chart.grid[r * 20 + c] = (r >> c) & 1;
+      }
+      return chart;
+    };
+    const short = await pageCount(await exportPdf(varied(20), { includeInstructions: true }));
+    const long = await pageCount(await exportPdf(varied(200), { includeInstructions: true }));
     expect(long).toBeGreaterThan(short);
   });
 
@@ -140,6 +150,28 @@ describe('estimatePages', () => {
 
   it('reports zero when nothing can fit, so the dialog can warn', () => {
     expect(estimatePages(chartWith(10, 10), { cellSizeMm: 300 })).toBe(0);
+  });
+});
+
+describe('one page by default', () => {
+  it('keeps a chart that used to tile on a single sheet', async () => {
+    // 6 mm stitches — the old default — would put this across several pages.
+    const chart = chartWith(120, 150);
+    expect(estimatePages(chart, { cellSizeMm: 6 })).toBeGreaterThan(1);
+    expect(estimatePages(chart)).toBe(1);
+    expect(await pageCount(await exportPdf(chart))).toBe(1);
+  });
+
+  it('reports the stitch size that fitting actually cost', () => {
+    const small = stitchSizeMm(chartWith(20, 16));
+    const big = stitchSizeMm(chartWith(200, 160));
+    expect(small).toBeGreaterThan(big); // squeezing more stitches on means smaller ones
+    expect(big).toBeGreaterThan(0);
+    expect(big).toBeLessThan(2); // small enough that the dialog warns about it
+  });
+
+  it('reports a fixed stitch size back unchanged', () => {
+    expect(stitchSizeMm(chartWith(20, 16), { cellSizeMm: 6 })).toBeCloseTo(6, 6);
   });
 });
 

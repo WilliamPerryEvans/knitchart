@@ -12,7 +12,13 @@
 
 import type { Gauge, PaletteColor } from '../model/types';
 
-export type GeneratorKind = 'sierpinski' | 'rule' | 'carpet' | 'stripes' | 'checks';
+export type GeneratorKind =
+  | 'sierpinski'
+  | 'equilateral'
+  | 'rule'
+  | 'carpet'
+  | 'stripes'
+  | 'checks';
 
 /** Where the automaton's first generation sits. */
 export type Origin = 'top' | 'bottom';
@@ -53,8 +59,15 @@ export interface GeneratorOptions {
   /** Deterministic source for the random seed, so tests can pin it down. */
   random?: () => number;
 
-  // Sierpinski carpet
+  // Sierpinski carpet, and levels of detail for the equilateral triangle
   depth: number;
+
+  /**
+   * Cell height divided by cell width in the finished fabric — `cellAspect` of
+   * the chart's gauge. Only the equilateral triangle uses it, and only so the
+   * shape is a true triangle off the needles rather than on the chart squares.
+   */
+  aspect: number;
 
   // stripes
   runA: number;
@@ -78,6 +91,7 @@ export const DEFAULT_GENERATOR: GeneratorOptions = {
   wrap: false,
   restart: true,
   depth: 3,
+  aspect: 1,
   runA: 4,
   runB: 4,
   axis: 'horizontal',
@@ -214,6 +228,91 @@ export function generateCarpet(width: number, height: number, depth: number): Ui
   return out;
 }
 
+// --- equilateral Sierpinski triangle --------------------------------------
+
+/** Half the height of an equilateral triangle relative to its base. */
+const EQUILATERAL_RATIO = Math.sqrt(3) / 2;
+
+/**
+ * Is a point inside the Sierpinski gasket, given its barycentric coordinates in
+ * the outer triangle? At each level the point either sits in one of the three
+ * corner sub-triangles — identified by that coordinate reaching a half — and we
+ * rescale into it, or it sits in the central inverted triangle, which is a hole.
+ */
+export function inGasket(u: number, v: number, w: number, depth: number): boolean {
+  if (u < 0 || v < 0 || w < 0) return false; // outside the triangle entirely
+  let a = u;
+  let b = v;
+  let c = w;
+  for (let k = 0; k < depth; k++) {
+    if (a >= 0.5) {
+      a = 2 * a - 1;
+      b *= 2;
+      c *= 2;
+    } else if (b >= 0.5) {
+      b = 2 * b - 1;
+      a *= 2;
+      c *= 2;
+    } else if (c >= 0.5) {
+      c = 2 * c - 1;
+      a *= 2;
+      b *= 2;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A Sierpinski triangle that is actually equilateral **in the finished fabric**.
+ *
+ * The rule-90 version grows one column per side per row, which on a worsted
+ * gauge knits up as a wide, flat wedge — right maths, wrong shape for a garment
+ * panel. Here the triangle is drawn geometrically instead: work in units of one
+ * cell width, so a cell is 1 wide and `aspect` tall, fit the largest equilateral
+ * triangle inside the chart's real proportions, and test each stitch's centre.
+ */
+export function generateEquilateral(
+  width: number,
+  height: number,
+  depth: number,
+  aspect: number
+): Uint8Array {
+  const out = new Uint8Array(width * height);
+  const levels = Math.max(1, depth);
+  const asp = aspect > 0 ? aspect : 1;
+
+  // Chart size in cell-width units, then the biggest triangle that fits.
+  const chartW = width;
+  const chartH = height * asp;
+  const base = Math.min(chartW, chartH / EQUILATERAL_RATIO);
+  const triH = base * EQUILATERAL_RATIO;
+  const x0 = (chartW - base) / 2;
+  const y0 = (chartH - triH) / 2;
+
+  // Apex top-centre, base along the bottom.
+  const ax = x0 + base / 2;
+  const ay = y0;
+  const bx = x0;
+  const by = y0 + triH;
+  const cx = x0 + base;
+  const cy = y0 + triH;
+  const den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+  if (den === 0) return out;
+
+  for (let r = 0; r < height; r++) {
+    const py = (r + 0.5) * asp;
+    for (let c = 0; c < width; c++) {
+      const px = c + 0.5;
+      const u = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / den;
+      const v = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / den;
+      out[r * width + c] = inGasket(u, v, 1 - u - v, levels) ? 1 : 0;
+    }
+  }
+  return out;
+}
+
 // --- simple repeats -------------------------------------------------------
 
 export function generateStripes(
@@ -329,6 +428,8 @@ export function generateBinary(
       return generateChecks(width, height, o.blockW, o.blockH);
     case 'carpet':
       return generateCarpet(width, height, o.depth);
+    case 'equilateral':
+      return generateEquilateral(width, height, o.depth, o.aspect);
     case 'sierpinski':
       // The Sierpinski triangle IS rule 90 from a single stitch with plain
       // edges. Knitters look for it by name, so it gets its own entry.
@@ -355,7 +456,10 @@ export function generatePattern(
   const cw = Math.ceil(stitches / sx);
   const ch = Math.ceil(rows / sy);
 
-  let cells = generateBinary(cw, ch, o);
+  // Scaling changes the shape of a pattern cell, so the equilateral triangle
+  // has to be told the pattern grid's aspect rather than the chart's.
+  const effective = o.kind === 'equilateral' ? { ...o, aspect: (o.aspect * sy) / sx } : o;
+  let cells = generateBinary(cw, ch, effective);
   cells = scaleGrid(cells, cw, ch, sx, sy);
 
   const fullW = cw * sx;
@@ -403,6 +507,8 @@ export function generatorLabel(o: GeneratorOptions): string {
   switch (o.kind) {
     case 'sierpinski':
       return 'Sierpinski triangle';
+    case 'equilateral':
+      return 'Equilateral Sierpinski triangle';
     case 'carpet':
       return 'Sierpinski carpet';
     case 'stripes':

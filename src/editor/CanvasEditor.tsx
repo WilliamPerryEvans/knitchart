@@ -16,6 +16,8 @@ import {
   mirrorCellIndices,
   regionContains,
   regionFromCorners,
+  rotatedPlacement,
+  type QuarterTurns,
   type Region,
 } from '../domain/region';
 
@@ -38,13 +40,20 @@ const MARGIN_T = 16;
 const MARGIN_B = 30; // stitch numbers
 
 interface DragState {
-  mode: 'paint' | 'shape' | 'pan' | 'marquee' | 'moveSelection';
+  mode: 'paint' | 'shape' | 'pan' | 'marquee' | 'moveSelection' | 'rotateSelection';
   start: Cell;
   last: Cell;
   panStart: { x: number; y: number; scrollLeft: number; scrollTop: number } | null;
   /** Where the selection sat when a move-drag began. */
   origin?: { row: number; col: number };
+  /** Pointer angle about the selection centre when a rotate-drag began. */
+  startAngle?: number;
+  /** Quarter turns the rotate-drag has reached so far. */
+  turns?: QuarterTurns;
 }
+
+/** Radius of the rotate grip, in css px. */
+const ROTATE_HANDLE_R = 9;
 
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace('#', '');
@@ -81,6 +90,7 @@ export function CanvasEditor() {
   const showFloatHighlight = useStore((s) => s.showFloatHighlight);
   const selection = useStore((s) => s.selection);
   const clipboard = useStore((s) => s.clipboard);
+  const pasteMode = useStore((s) => s.pasteMode);
   const chartEpoch = useStore((s) => s.chartEpoch);
 
   const cellW = BASE_CELL_W;
@@ -210,6 +220,33 @@ export function CanvasEditor() {
     },
     [cellW, cellH, getPan]
   );
+
+  /** Pointer position in overlay-local css px. */
+  const localPoint = useCallback((clientX: number, clientY: number) => {
+    const el = overlayRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }, []);
+
+  /**
+   * The rotate grip, sitting off the selection's top-right corner, and the
+   * centre it turns about. Null when there is nothing selected.
+   */
+  const rotateHandle = useCallback(() => {
+    const sel = useStore.getState().selection;
+    if (!sel) return null;
+    const { panX, panY } = getPan();
+    const zoom = viewRef.current.zoom;
+    const cw = cellW * zoom;
+    const ch = cellH * zoom;
+    return {
+      x: panX + (sel.col + sel.w) * cw + 13,
+      y: panY + sel.row * ch - 13,
+      cx: panX + (sel.col + sel.w / 2) * cw,
+      cy: panY + (sel.row + sel.h / 2) * ch,
+    };
+  }, [cellW, cellH, getPan]);
 
   /**
    * Grid lines and gutter labels, cached to their own canvas. They only change
@@ -437,6 +474,18 @@ export function CanvasEditor() {
 
     if (drag?.mode === 'marquee') {
       marchingAnts(regionFromCorners(drag.start, drag.last), true);
+    } else if (drag?.mode === 'rotateSelection' && s.selection) {
+      const turns = drag.turns ?? 0;
+      octx.save();
+      octx.globalAlpha = 0.35;
+      marchingAnts(s.selection, false);
+      octx.restore();
+      if (turns !== 0) {
+        marchingAnts(
+          rotatedPlacement(s.selection, { stitches: c.stitches, rows: c.rows }, turns),
+          true
+        );
+      }
     } else if (drag?.mode === 'moveSelection' && drag.origin && s.selection) {
       // show where it will land, and where it came from
       const dRow = drag.last.row - drag.start.row;
@@ -453,6 +502,27 @@ export function CanvasEditor() {
       marchingAnts(s.selection, true);
     }
 
+    // rotate grip — right angles only, so it snaps as you drag it round
+    if (s.tool === 'select' && s.selection && drag?.mode !== 'marquee') {
+      const grip = rotateHandle();
+      if (grip) {
+        octx.save();
+        octx.beginPath();
+        octx.arc(grip.x, grip.y, ROTATE_HANDLE_R, 0, Math.PI * 2);
+        octx.fillStyle = drag?.mode === 'rotateSelection' ? '#4f8cc9' : 'rgba(20,22,26,0.85)';
+        octx.fill();
+        octx.strokeStyle = '#fff';
+        octx.lineWidth = 1.5;
+        octx.stroke();
+        octx.fillStyle = '#fff';
+        octx.font = '11px system-ui, sans-serif';
+        octx.textAlign = 'center';
+        octx.textBaseline = 'middle';
+        octx.fillText('↻', grip.x, grip.y + 0.5);
+        octx.restore();
+      }
+    }
+
     // hover cursor
     const hover = hoverRef.current;
     if (hover && !drag) {
@@ -464,7 +534,7 @@ export function CanvasEditor() {
       octx.strokeRect(panX + hover.col * cw, panY + hover.row * ch, cw, ch);
     }
     octx.restore();
-  }, [cellW, cellH, getPan, drawChrome]);
+  }, [cellW, cellH, getPan, drawChrome, rotateHandle]);
   drawRef.current = draw;
 
   // resize canvases to the scroll viewport, DPR-aware
@@ -489,9 +559,15 @@ export function CanvasEditor() {
     return () => ro.disconnect();
   }, [invalidate, syncGeometry]);
 
-  // repaint the raster (only the changed cells) whenever the grid changes
+  // Repaint the raster (only the changed cells) whenever the grid changes, then
+  // empty the list. The store accumulates rather than replaces, so several
+  // edits coalesced into one render all get drawn; consuming it here is what
+  // stops the list growing without bound. Nothing selects `dirtyCells`, so this
+  // write costs no re-renders.
   useEffect(() => {
-    rebuildOffscreen(useStore.getState().dirtyCells);
+    const dirty = useStore.getState().dirtyCells;
+    rebuildOffscreen(dirty);
+    if (useStore.getState().dirtyCells === dirty) useStore.setState({ dirtyCells: [] });
     invalidate();
   }, [gridVersion, chart.palette, rebuildOffscreen, invalidate]);
 
@@ -539,7 +615,10 @@ export function CanvasEditor() {
     if (!import.meta.env.DEV) return;
     (
       window as unknown as {
-        __knitView: { cellPoint: (row: number, col: number) => { x: number; y: number } | null };
+        __knitView: {
+          cellPoint: (row: number, col: number) => { x: number; y: number } | null;
+          rotateGrip: () => { x: number; y: number; cx: number; cy: number } | null;
+        };
       }
     ).__knitView = {
       cellPoint: (row, col) => {
@@ -553,8 +632,20 @@ export function CanvasEditor() {
           y: rect.top + panY + (row + 0.5) * cellH * zoom,
         };
       },
+      rotateGrip: () => {
+        const el = overlayRef.current;
+        const grip = rotateHandle();
+        if (!el || !grip) return null;
+        const rect = el.getBoundingClientRect();
+        return {
+          x: rect.left + grip.x,
+          y: rect.top + grip.y,
+          cx: rect.left + grip.cx,
+          cy: rect.top + grip.cy,
+        };
+      },
     };
-  }, [getPan, cellW, cellH]);
+  }, [getPan, cellW, cellH, rotateHandle]);
 
   // space key for panning
   useEffect(() => {
@@ -624,8 +715,36 @@ export function CanvasEditor() {
         return;
       }
       if (e.button !== 0) return;
+
+      // The rotate grip sits outside the selection, and often outside the grid
+      // entirely, so it has to be tested before both the move branch and the
+      // click-off-to-deselect below.
+      if (s.tool === 'select' && s.selection) {
+        const grip = rotateHandle();
+        const p = localPoint(e.clientX, e.clientY);
+        if (grip && p && Math.hypot(p.x - grip.x, p.y - grip.y) <= ROTATE_HANDLE_R + 3) {
+          dragRef.current = {
+            mode: 'rotateSelection',
+            start: { row: 0, col: 0 },
+            last: { row: 0, col: 0 },
+            panStart: null,
+            startAngle: Math.atan2(p.y - grip.cy, p.x - grip.cx),
+            turns: 0,
+          };
+          invalidate();
+          return;
+        }
+      }
+
       const cell = cellAt(e.clientX, e.clientY);
-      if (!cell) return;
+      if (!cell) {
+        // Clicking off the grid means "I'm done with this selection".
+        if (s.tool === 'select' && s.selection) {
+          s.setSelection(null);
+          invalidate();
+        }
+        return;
+      }
       const c = s.chart;
       const i = cell.row * c.stitches + cell.col;
 
@@ -674,7 +793,7 @@ export function CanvasEditor() {
         }
       }
     },
-    [cellAt, invalidate, indicesFor]
+    [cellAt, invalidate, indicesFor, rotateHandle, localPoint]
   );
 
   const onPointerMove = useCallback(
@@ -686,6 +805,18 @@ export function CanvasEditor() {
           // dragging right moves the chart right, i.e. scrolls left
           sc.scrollLeft = drag.panStart.scrollLeft - (e.clientX - drag.panStart.x);
           sc.scrollTop = drag.panStart.scrollTop - (e.clientY - drag.panStart.y);
+        }
+        invalidate();
+        return;
+      }
+      // Rotating tracks the pointer wherever it goes, including off the grid.
+      if (drag?.mode === 'rotateSelection' && drag.startAngle !== undefined) {
+        const grip = rotateHandle();
+        const p = localPoint(e.clientX, e.clientY);
+        if (grip && p) {
+          const angle = Math.atan2(p.y - grip.cy, p.x - grip.cx);
+          const quarters = Math.round((angle - drag.startAngle) / (Math.PI / 2));
+          drag.turns = (((quarters % 4) + 4) % 4) as QuarterTurns;
         }
         invalidate();
         return;
@@ -710,7 +841,7 @@ export function CanvasEditor() {
       }
       invalidate();
     },
-    [cellAt, invalidate, indicesFor]
+    [cellAt, invalidate, indicesFor, rotateHandle, localPoint]
   );
 
   const onPointerUp = useCallback(
@@ -727,6 +858,8 @@ export function CanvasEditor() {
         applyShape(s.tool === 'rect' ? 'rect' : 'line', drag.start, drag.last);
       } else if (drag.mode === 'marquee') {
         s.setSelection(regionFromCorners(drag.start, drag.last));
+      } else if (drag.mode === 'rotateSelection') {
+        if (drag.turns) s.rotateSelection(drag.turns);
       } else if (drag.mode === 'moveSelection' && drag.origin) {
         const dRow = drag.last.row - drag.start.row;
         const dCol = drag.last.col - drag.start.col;
@@ -829,6 +962,35 @@ export function CanvasEditor() {
           >
             Paste
           </button>
+          {/* What Paste and Ctrl+V do: overwrite, or let the background colour
+              of the copy show whatever is already on the chart. */}
+          <span className="selection-modes" title="What a paste does to the stitches underneath">
+            <button
+              className={pasteMode === 'replace' ? 'seg on' : 'seg'}
+              onClick={() => useStore.getState().setPasteMode('replace')}
+            >
+              Replace
+            </button>
+            <button
+              className={pasteMode === 'over' ? 'seg on' : 'seg'}
+              title={`Stitches in ${chart.palette[0]?.name ?? 'the first color'} stay see-through`}
+              onClick={() => useStore.getState().setPasteMode('over')}
+            >
+              On top
+            </button>
+          </span>
+          <button
+            title="Turn a quarter clockwise — or drag the ↻ grip"
+            onClick={() => useStore.getState().rotateSelection(1)}
+          >
+            ↻
+          </button>
+          <button
+            title="Turn a quarter anticlockwise"
+            onClick={() => useStore.getState().rotateSelection(3)}
+          >
+            ↺
+          </button>
           <button
             title="Flip left to right"
             onClick={() => useStore.getState().mirrorSelection('horizontal')}
@@ -862,7 +1024,9 @@ export function CanvasEditor() {
         {tool === 'rect' && 'Rectangle — drag corner to corner'}
         {tool === 'line' && 'Line — drag start to end'}
         {tool === 'select' &&
-          (selection ? 'Drag inside to move · Esc to deselect' : 'Drag to select stitches')}
+          (selection
+            ? 'Drag inside to move · drag the ↻ grip to turn it · Esc or click off the chart to deselect'
+            : 'Drag to select stitches')}
         {' · wheel zoom · shift+wheel or scrollbars to pan'}
       </div>
     </div>
