@@ -1,7 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useStore } from './store';
+import { mirrorCellIndices } from '../domain/region';
 
 const gauge = { stsPer4in: 20, rowsPer4in: 26, unit: 'in' as const };
+
+/** Narrow an undo entry to a cell command, failing loudly if it isn't one. */
+function cellDiffs(index: number) {
+  const cmd = useStore.getState().undoStack[index];
+  if (!cmd || cmd.kind !== 'cells') {
+    throw new Error(`undoStack[${index}] is ${cmd?.kind ?? 'missing'}, expected a cells command`);
+  }
+  return cmd.diffs;
+}
 
 function freshChart(stitches = 10, rows = 6, direction: 'flat' | 'round' = 'flat') {
   useStore.getState().newChart({
@@ -25,7 +35,7 @@ describe('paint strokes', () => {
     s.endStroke('Pencil');
 
     expect(useStore.getState().undoStack).toHaveLength(1);
-    expect(useStore.getState().undoStack[0].diffs).toHaveLength(3);
+    expect(cellDiffs(0)).toHaveLength(3);
     expect(Array.from(useStore.getState().chart.grid.slice(0, 4))).toEqual([1, 1, 1, 0]);
 
     useStore.getState().undo();
@@ -40,8 +50,7 @@ describe('paint strokes', () => {
     s.paintCell(5, 1);
     s.paintCell(5, 1); // same color, no-op
     s.endStroke('Pencil');
-    const cmd = useStore.getState().undoStack[0];
-    expect(cmd.diffs).toEqual([{ i: 5, before: 0, after: 1 }]);
+    expect(cellDiffs(0)).toEqual([{ i: 5, before: 0, after: 1 }]);
 
     // second stroke paints the same cell a different color
     const s2 = useStore.getState();
@@ -123,6 +132,183 @@ describe('float warnings update with edits', () => {
   });
 });
 
+describe('resize', () => {
+  it('adds rows to the top, keeping existing stitches', () => {
+    freshChart(4, 2);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1); // top-left
+    s.endStroke('Pencil');
+
+    useStore.getState().resizeByEdges({ top: 2 });
+    const c = useStore.getState().chart;
+    expect(c.rows).toBe(4);
+    expect(c.stitches).toBe(4);
+    expect(c.grid[0]).toBe(0); // new blank row
+    expect(c.grid[2 * 4]).toBe(1); // the painted stitch moved down two rows
+  });
+
+  it('restores stitches lost to shrinking when undone', () => {
+    freshChart(4, 2);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(3, 1); // top-right, the stitch about to be cut off
+    s.endStroke('Pencil');
+
+    useStore.getState().resizeByEdges({ right: -2 });
+    expect(useStore.getState().chart.stitches).toBe(2);
+    expect([...useStore.getState().chart.grid]).not.toContain(1);
+
+    useStore.getState().undo();
+    const c = useStore.getState().chart;
+    expect(c.stitches).toBe(4);
+    expect(c.grid[3]).toBe(1); // the cut stitch came back
+  });
+
+  it('redoes a resize', () => {
+    freshChart(4, 4);
+    useStore.getState().resizeByEdges({ bottom: 2 });
+    useStore.getState().undo();
+    expect(useStore.getState().chart.rows).toBe(4);
+    useStore.getState().redo();
+    expect(useStore.getState().chart.rows).toBe(6);
+  });
+
+  it('resizes to an absolute size with an anchor', () => {
+    freshChart(2, 2);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1);
+    s.endStroke('Pencil');
+
+    useStore.getState().resizeTo(4, 4, { h: 'right', v: 'bottom' });
+    const c = useStore.getState().chart;
+    expect([c.stitches, c.rows]).toEqual([4, 4]);
+    expect(c.grid[2 * 4 + 2]).toBe(1); // pushed to the bottom-right block
+  });
+
+  it('refuses to shrink past one stitch', () => {
+    freshChart(2, 2);
+    useStore.getState().resizeByEdges({ left: -5 });
+    expect(useStore.getState().chart.stitches).toBe(2);
+    expect(useStore.getState().undoStack).toHaveLength(0);
+  });
+
+  it('crops away background borders', () => {
+    freshChart(6, 6);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(2 * 6 + 2, 1);
+    s.paintCell(3 * 6 + 3, 1);
+    s.endStroke('Pencil');
+
+    useStore.getState().cropToContent();
+    const c = useStore.getState().chart;
+    expect([c.stitches, c.rows]).toEqual([2, 2]);
+    expect([...c.grid]).toEqual([1, 0, 0, 1]);
+  });
+
+  it('leaves an empty chart alone when cropping', () => {
+    freshChart(4, 4);
+    useStore.getState().cropToContent();
+    expect(useStore.getState().chart.stitches).toBe(4);
+    expect(useStore.getState().undoStack).toHaveLength(0);
+  });
+
+  it('does not bump chartEpoch, so the view will not jump', () => {
+    freshChart(4, 4);
+    const before = useStore.getState().chartEpoch;
+    useStore.getState().resizeByEdges({ top: 1, right: 1 });
+    expect(useStore.getState().chartEpoch).toBe(before);
+  });
+});
+
+describe('selection', () => {
+  it('moves a region as one undo step, clearing the source', () => {
+    freshChart(4, 4);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1);
+    s.paintCell(1, 1);
+    s.endStroke('Pencil');
+    const undoDepth = useStore.getState().undoStack.length;
+
+    useStore.getState().setSelection({ row: 0, col: 0, w: 2, h: 1 });
+    useStore.getState().moveSelection(2, 2);
+
+    expect(useStore.getState().undoStack).toHaveLength(undoDepth + 1);
+    const c = useStore.getState().chart;
+    expect([c.grid[0], c.grid[1]]).toEqual([0, 0]);
+    expect([c.grid[2 * 4 + 2], c.grid[2 * 4 + 3]]).toEqual([1, 1]);
+
+    useStore.getState().undo();
+    const back = useStore.getState().chart;
+    expect([back.grid[0], back.grid[1]]).toEqual([1, 1]);
+  });
+
+  it('copies and pastes a region elsewhere', () => {
+    freshChart(4, 4);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1);
+    s.endStroke('Pencil');
+
+    useStore.getState().setSelection({ row: 0, col: 0, w: 1, h: 1 });
+    useStore.getState().copySelection();
+    useStore.getState().pasteClipboard(3, 3);
+
+    const c = useStore.getState().chart;
+    expect(c.grid[0]).toBe(1); // original still there
+    expect(c.grid[3 * 4 + 3]).toBe(1); // and the copy
+  });
+
+  it('clips a selection to the chart', () => {
+    freshChart(4, 4);
+    useStore.getState().setSelection({ row: 2, col: 2, w: 10, h: 10 });
+    expect(useStore.getState().selection).toEqual({ row: 2, col: 2, w: 2, h: 2 });
+  });
+
+  it('mirrors a selection in place', () => {
+    freshChart(4, 2);
+    const s = useStore.getState();
+    s.beginStroke();
+    s.paintCell(0, 1); // row 0, col 0
+    s.endStroke('Pencil');
+
+    useStore.getState().setSelection({ row: 0, col: 0, w: 4, h: 1 });
+    useStore.getState().mirrorSelection('horizontal');
+    const c = useStore.getState().chart;
+    expect(c.grid[0]).toBe(0);
+    expect(c.grid[3]).toBe(1); // flipped to the far end
+  });
+
+  it('drops the selection when a resize changes the chart', () => {
+    freshChart(4, 4);
+    useStore.getState().setSelection({ row: 0, col: 0, w: 2, h: 2 });
+    useStore.getState().resizeByEdges({ top: 1 });
+    expect(useStore.getState().selection).toBeNull();
+  });
+});
+
+describe('mirror painting', () => {
+  it('paints the mirrored stitch across the vertical centre', () => {
+    freshChart(5, 3);
+    useStore.getState().setMirrorAxis('vertical');
+    const s = useStore.getState();
+    s.beginStroke();
+    // store-level paint is unmirrored; the editor expands cells. Verify the
+    // expansion helper is wired by mirroring through the same path the UI uses.
+    s.paintCells(
+      mirrorCellIndices([0], { stitches: 5, rows: 3 }, 'vertical').map((i) => ({ i, color: 1 }))
+    );
+    s.endStroke('Pencil');
+
+    const c = useStore.getState().chart;
+    expect(c.grid[0]).toBe(1);
+    expect(c.grid[4]).toBe(1);
+  });
+});
+
 describe('palette', () => {
   it('swaps one color for another across the whole chart in one undo step', () => {
     freshChart(4, 2);
@@ -147,5 +333,124 @@ describe('palette', () => {
     const p = useStore.getState().chart.palette;
     expect(p).toHaveLength(3);
     expect(p[2]).toMatchObject({ id: 2, hex: '#c92a2a', name: 'CC2' });
+  });
+
+  /**
+   * Palette ids are array indices and cells store them directly, so removing or
+   * reordering a color has to renumber the grid too. These are the tests that
+   * catch a chart being silently recolored.
+   */
+  describe('delete', () => {
+    function threeColorChart() {
+      freshChart(4, 1);
+      useStore.getState().addColor('#c92a2a', 'CC2');
+      const s = useStore.getState();
+      s.beginStroke();
+      s.paintCell(0, 0);
+      s.paintCell(1, 1);
+      s.paintCell(2, 2);
+      s.paintCell(3, 2);
+      s.endStroke('setup');
+    }
+
+    it('repaints the removed color and shifts higher indices down', () => {
+      threeColorChart();
+      // remove CC1 (index 1); its stitches become MC (0), and CC2 becomes 1
+      useStore.getState().deleteColor(1, 0);
+
+      const c = useStore.getState().chart;
+      expect(c.palette).toHaveLength(2);
+      expect(c.palette.map((p) => p.name)).toEqual(['MC', 'CC2']);
+      expect(c.palette.map((p) => p.id)).toEqual([0, 1]);
+      expect([...c.grid]).toEqual([0, 0, 1, 1]);
+    });
+
+    it('keeps every cell pointing at a real palette entry', () => {
+      threeColorChart();
+      useStore.getState().deleteColor(0, 1);
+      const c = useStore.getState().chart;
+      for (const v of c.grid) expect(v).toBeLessThan(c.palette.length);
+    });
+
+    it('can remap onto a different surviving color', () => {
+      threeColorChart();
+      // remove CC1, turning its stitches into CC2 (which becomes index 1)
+      useStore.getState().deleteColor(1, 2);
+      expect([...useStore.getState().chart.grid]).toEqual([0, 1, 1, 1]);
+    });
+
+    it('undoes palette and grid together', () => {
+      threeColorChart();
+      const before = [...useStore.getState().chart.grid];
+      useStore.getState().deleteColor(1, 0);
+      useStore.getState().undo();
+
+      const c = useStore.getState().chart;
+      expect(c.palette).toHaveLength(3);
+      expect([...c.grid]).toEqual(before);
+    });
+
+    it('refuses to remove the last color', () => {
+      freshChart(2, 1);
+      useStore.getState().deleteColor(1);
+      useStore.getState().deleteColor(0);
+      expect(useStore.getState().chart.palette.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('keeps the active color valid', () => {
+      threeColorChart();
+      useStore.getState().setActiveColor(2);
+      useStore.getState().deleteColor(1, 0);
+      const { activeColor, chart } = useStore.getState();
+      expect(activeColor).toBe(1); // CC2 slid down into slot 1
+      expect(activeColor).toBeLessThan(chart.palette.length);
+    });
+  });
+
+  describe('reorder', () => {
+    it('remaps every cell through the new order', () => {
+      freshChart(3, 1);
+      useStore.getState().addColor('#c92a2a', 'CC2');
+      const s = useStore.getState();
+      s.beginStroke();
+      s.paintCell(0, 0);
+      s.paintCell(1, 1);
+      s.paintCell(2, 2);
+      s.endStroke('setup');
+
+      // move CC2 (index 2) to the front
+      useStore.getState().reorderColor(2, 0);
+
+      const c = useStore.getState().chart;
+      expect(c.palette.map((p) => p.name)).toEqual(['CC2', 'MC', 'CC1']);
+      expect(c.palette.map((p) => p.id)).toEqual([0, 1, 2]);
+      // the stitches keep their colors: MC->1, CC1->2, CC2->0
+      expect([...c.grid]).toEqual([1, 2, 0]);
+    });
+
+    it('leaves the chart looking identical', () => {
+      freshChart(3, 1);
+      useStore.getState().addColor('#c92a2a', 'CC2');
+      const s = useStore.getState();
+      s.beginStroke();
+      s.paintCell(0, 2);
+      s.endStroke('setup');
+
+      const indexBefore = useStore.getState().chart.grid[0];
+      const colorBefore = useStore.getState().chart.palette[indexBefore].hex;
+
+      useStore.getState().reorderColor(2, 0);
+      const c = useStore.getState().chart;
+      expect(c.palette[c.grid[0]].hex).toBe(colorBefore);
+    });
+
+    it('undoes back to the original order', () => {
+      freshChart(3, 1);
+      useStore.getState().addColor('#c92a2a', 'CC2');
+      const before = useStore.getState().chart.palette.map((p) => p.name);
+      useStore.getState().reorderColor(2, 0);
+      useStore.getState().undo();
+      expect(useStore.getState().chart.palette.map((p) => p.name)).toEqual(before);
+    });
   });
 });

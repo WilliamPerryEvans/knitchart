@@ -8,16 +8,22 @@ app implements **the core editor only** — see "Deliberately not built" below.
 
 ## Where to pick up
 
-Core editor is complete and verified. Next candidates, in the guide's order:
-image import (image-q quantization), PDF export (pdf-lib with page tiling),
-stitch symbols, repeat boxes, knit-mode progress tracker, AI assistant.
+The editor is complete: painting, selection, resize, palette management, float
+checking, and export all work. The roadmap agreed with the user, in order:
+
+1. **Print + multi-page PDF** (pdf-lib, tiling with overlap and repeated labels)
+2. Written instructions + yarn/stitch estimates
+3. Fractal generator — Sierpinski and Rule 90, purely local, no AI needed
+4. Repeat boxes → knit mode → image import → stitch symbols
+5. AI assistant, last: it needs a key-holding proxy before it does anything, and
+   step 3 delivers most of the generative value with none of that infrastructure
 
 ## Running it
 
 ```bash
 npm install
 npm run dev          # browser at localhost:5173
-npm test             # vitest, 53 unit tests
+npm test             # vitest, 146 unit tests
 npx tauri dev        # desktop app with hot reload
 npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
 ```
@@ -30,10 +36,11 @@ First `tauri build` takes ~6 minutes; later builds are much faster.
 ```
 src/
   model/     types, RLE codec, .knitchart file <-> Chart, gauge math
-  domain/    float checker, gutter label conventions
+  domain/    float checker, label conventions, region geometry, yarn presets
   state/     Zustand store + undo/redo command stack
   editor/    Canvas render loop, tool geometry (line/rect/flood fill)
-  components/ TopBar, Toolbar, PalettePanel, WarningsPanel, NewChartDialog
+  components/ TopBar, Toolbar, PalettePanel, ChartSizePanel, WarningsPanel,
+              NewChartDialog
   io/        save/open, PNG + SVG export
 src-tauri/   Rust shell, NSIS bundle config, fs/dialog permissions
 ```
@@ -66,11 +73,43 @@ because a blank chart is entirely one color and would otherwise light up red.
 In the round, the scan wraps the row boundary and reports the run once, anchored
 at the first color change so it can't be double-counted.
 
-**Undo/redo stores cell diffs, not grid snapshots.** A 300×300 snapshot is 90 KB
-per step; a diff is a handful of entries. A drag coalesces into one command:
-`beginStroke()` → many `paintCell()` → `endStroke()`. If a cell is repainted
-within one stroke, the command keeps the *original* `before` so a single undo
-reverts the whole drag. History is capped at 200 commands.
+**Undo/redo has two command kinds.** `Command` is a tagged union:
+
+- `cells` — per-cell diffs, used by every painting operation. A 300×300 snapshot
+  would be 90 KB per step; a diff is a handful of entries. A drag coalesces into
+  one command: `beginStroke()` → many `paintCell()` → `endStroke()`. If a cell is
+  repainted within one stroke, the command keeps the *original* `before` so a
+  single undo reverts the whole drag.
+- `structure` — a full snapshot of grid + dimensions + palette, used by resize,
+  crop, and palette delete/reorder. Those change the grid's *shape* or the
+  *meaning* of its indices, which diffs cannot express. Snapshotting is fine
+  precisely because structural edits are rare.
+
+History is capped at 200 commands. `applyCells` merges repeated indices within
+one command, keeping the first `before` and last `after` — undo replays diffs in
+order, so two diffs for the same cell would otherwise restore the wrong value.
+Moving a selection is the operation that can produce them.
+
+**Palette ids are array indices, and cells store them directly.** Deleting or
+reordering a color therefore has to renumber the whole grid, not just edit the
+palette array — `deleteColor` builds a remap table and rewrites every cell, and
+both operations emit a single `structure` command so palette and grid can never
+undo apart. A palette change that undid without its grid remap would silently
+recolor the chart; the store tests exist to catch exactly that.
+
+**The view fits on `chartEpoch`, not on dimensions.** The canvas re-fits and
+re-centres when a different chart arrives. Keying that on `stitches`/`rows` would
+make the view jump on every click of a resize stepper, so the store bumps
+`chartEpoch` only in `newChart`/`loadChart`; resizing deliberately leaves zoom
+and scroll alone.
+
+**Selection is a plain region, and all its operations are `cells` commands.**
+`domain/region.ts` holds the pure geometry (extract, place with clipping, move,
+mirror, rotate, fill), so move/copy/paste/flip all route through the existing
+`applyCells` and need no new undo machinery. Moving clears the vacated stitches
+to palette index 0, the documented background slot. Escape or a click outside
+deselects — the first person to use the app assumed the float highlighting was a
+selection and expected exactly that, so the real selection honors it.
 
 **Pan comes from a real scroll container, not a stored offset.** The canvases sit
 inside `.editor-scroll` as a `position: sticky` layer sized to the viewport,
@@ -143,17 +182,25 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Testing
 
-- `npm test` — 79 unit tests over the pure functions: RLE encode/decode
+- `npm test` — 146 unit tests over the pure functions: RLE encode/decode
   (round-trips, malformed input), gauge math, float checker (flat, in the round,
   wrap, thresholds, incremental vs full rescan), label conventions (row/stitch
-  numbering, RS/WS, label thinning), yarn-weight presets, and the store's stroke
-  coalescing, undo/redo, and color swap.
+  numbering, RS/WS, label thinning), yarn-weight presets, region geometry
+  (resize per anchor, crop bounds, extract/place with clipping, overlapping
+  moves, mirroring), and the store's stroke coalescing, undo/redo, resize undo,
+  selection ops, and palette index remapping.
 - Browser smoke test (not in the repo — it lives in the session scratchpad):
   drives the real app with puppeteer-core against Edge, checking drag-paint,
   undo/redo via keyboard, flood fill, eyedropper, rectangle, the square-grid
   toggle, round-wrap warnings, export bytes, a save→load round trip, and frame
-  rate. It relies on `window.__knitStore`, which `src/state/store.ts` exposes
-  **only under `import.meta.env.DEV`**.
+  rate. It relies on `window.__knitStore` (from `src/state/store.ts`) and
+  `window.__knitView.cellPoint(row, col)` (from `CanvasEditor`, which turns a
+  stitch into a screen point using the editor's own view maths so the test can't
+  drift from it). Both are exposed **only under `import.meta.env.DEV`**.
+- `puppeteer.launch()` fails to hand off in this environment. Start Edge
+  separately with `--remote-debugging-port=9333 --headless=new` and use
+  `puppeteer.connect({ browserURL })`. Kill stray `msedge` processes between
+  runs — but check `MainWindowTitle` first so you don't close a real browser.
 
 ## Deliberately not built
 

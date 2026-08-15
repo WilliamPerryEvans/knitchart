@@ -2,8 +2,26 @@ import { create } from 'zustand';
 import type { Chart, Direction, FloatWarning, Gauge, PaletteColor } from '../model/types';
 import { createChart } from '../model/types';
 import { checkChartFloats, updateChartFloats } from '../domain/floats';
+import {
+  DEFAULT_ANCHOR,
+  clampRegion,
+  contentBounds,
+  extractRegion,
+  fillRegionCells,
+  mirrorRegionH,
+  mirrorRegionV,
+  moveRegionCells,
+  placeRegion,
+  resizeByEdges as resizeGridByEdges,
+  resizeGrid,
+  type Anchor,
+  type Edges,
+  type MirrorAxis,
+  type Region,
+  type RegionData,
+} from '../domain/region';
 
-export type Tool = 'pencil' | 'fill' | 'eyedropper' | 'rect' | 'line';
+export type Tool = 'pencil' | 'fill' | 'eyedropper' | 'rect' | 'line' | 'select';
 
 /** One cell edit: flat grid index, palette index before/after. */
 export interface CellDiff {
@@ -12,12 +30,35 @@ export interface CellDiff {
   after: number;
 }
 
-interface Command {
-  label: string;
-  diffs: CellDiff[];
+/** Everything a structural edit has to be able to put back. */
+export interface Snapshot {
+  grid: Uint8Array;
+  stitches: number;
+  rows: number;
+  palette: PaletteColor[];
 }
 
+/**
+ * Undo steps come in two shapes. Painting records per-cell diffs, which is why
+ * a 300x300 drag costs a few bytes instead of a 90 KB snapshot. Resizing and
+ * palette delete/reorder change the grid's shape or the meaning of its indices,
+ * which diffs cannot express, so those snapshot instead — affordable because
+ * structural edits are rare.
+ */
+export type Command =
+  | { kind: 'cells'; label: string; diffs: CellDiff[] }
+  | { kind: 'structure'; label: string; before: Snapshot; after: Snapshot };
+
 const MAX_HISTORY = 200;
+
+function snapshot(chart: Chart): Snapshot {
+  return {
+    grid: Uint8Array.from(chart.grid),
+    stitches: chart.stitches,
+    rows: chart.rows,
+    palette: chart.palette.map((c) => ({ ...c })),
+  };
+}
 
 interface EditorState {
   chart: Chart;
@@ -29,6 +70,12 @@ interface EditorState {
    * palette edit) and forces a full raster rebuild.
    */
   dirtyCells: number[] | null;
+  /**
+   * Bumped only when a different chart is loaded or created. The canvas fits
+   * the view on change, so resizing must NOT bump it — otherwise the view would
+   * jump on every click of a resize stepper.
+   */
+  chartEpoch: number;
   filePath: string | null;
   dirty: boolean;
 
@@ -38,6 +85,13 @@ interface EditorState {
   floatWarnings: FloatWarning[];
   /** Draw the red float markers on the chart. The panel still lists them. */
   showFloatHighlight: boolean;
+
+  /** Marquee selection, or null when nothing is selected. */
+  selection: Region | null;
+  /** App-internal copy buffer (not the OS clipboard). */
+  clipboard: RegionData | null;
+  /** Live-mirror painted stitches across the chart's centre lines. */
+  mirrorAxis: MirrorAxis;
 
   undoStack: Command[];
   redoStack: Command[];
@@ -65,6 +119,24 @@ interface EditorState {
   setActiveColor: (index: number) => void;
   setSquareMode: (on: boolean) => void;
   setShowFloatHighlight: (on: boolean) => void;
+  setMirrorAxis: (axis: MirrorAxis) => void;
+
+  // --- chart size ---
+  /** Grow/shrink by stitches per edge; negative removes. One undo step. */
+  resizeByEdges: (edges: Partial<Edges>) => void;
+  /** Resize to an absolute size, positioning existing stitches by the anchor. */
+  resizeTo: (stitches: number, rows: number, anchor?: Anchor) => void;
+  /** Trim background from every edge. No-op on an empty chart. */
+  cropToContent: () => void;
+
+  // --- selection ---
+  setSelection: (region: Region | null) => void;
+  moveSelection: (toRow: number, toCol: number) => void;
+  copySelection: () => void;
+  pasteClipboard: (row?: number, col?: number) => void;
+  mirrorSelection: (axis: 'horizontal' | 'vertical') => void;
+  fillSelection: (color: number) => void;
+  clearSelection: () => void;
 
   // --- painting (stroke-coalesced) ---
   beginStroke: () => void;
@@ -75,6 +147,15 @@ interface EditorState {
   /** One-shot grid command (fill, color swap): applies + pushes one undo step. */
   applyCells: (label: string, cells: Array<{ i: number; color: number }>) => void;
 
+  /**
+   * Replace the grid, and optionally its dimensions and palette, as one
+   * structural undo step. Used by resize and palette delete/reorder.
+   */
+  applyStructure: (
+    label: string,
+    next: { grid: Uint8Array; stitches?: number; rows?: number; palette?: PaletteColor[] }
+  ) => void;
+
   undo: () => void;
   redo: () => void;
 
@@ -83,10 +164,39 @@ interface EditorState {
   updateColor: (id: number, patch: Partial<Pick<PaletteColor, 'hex' | 'name'>>) => void;
   /** Repaint every cell of color `from` with color `to` (undoable). */
   swapColor: (from: number, to: number) => void;
+  /**
+   * Remove a color, repainting its stitches as `replaceWith` and renumbering
+   * every higher index down by one. Palette and grid change together in one
+   * undo step — separating them would silently recolor the chart.
+   */
+  deleteColor: (id: number, replaceWith?: number) => void;
+  /** Move a color to a new position, remapping every cell through the new order. */
+  reorderColor: (from: number, to: number) => void;
 }
 
 function recompute(chart: Chart): FloatWarning[] {
   return checkChartFloats(chart);
+}
+
+/**
+ * Put a snapshot back. Returns the state patch for undo/redo to spread, with a
+ * fresh copy of the grid so the stored snapshot can't be mutated by later edits.
+ */
+function restoreSnapshot(chart: Chart, snap: Snapshot) {
+  const restored: Chart = {
+    ...chart,
+    grid: Uint8Array.from(snap.grid),
+    stitches: snap.stitches,
+    rows: snap.rows,
+    palette: snap.palette.map((c) => ({ ...c })),
+  };
+  return {
+    chart: restored,
+    dirtyCells: null,
+    dirty: true,
+    selection: null, // the old selection may not fit the restored size
+    floatWarnings: checkChartFloats(restored),
+  };
 }
 
 /** Re-scan only the rows containing the given cell indices. */
@@ -112,6 +222,7 @@ export const useStore = create<EditorState>((set, get) => ({
   chart: initialChart,
   gridVersion: 0,
   dirtyCells: null,
+  chartEpoch: 0,
   filePath: null,
   dirty: false,
 
@@ -120,6 +231,10 @@ export const useStore = create<EditorState>((set, get) => ({
   squareMode: false,
   floatWarnings: [],
   showFloatHighlight: true,
+
+  selection: null,
+  clipboard: null,
+  mirrorAxis: 'none',
 
   undoStack: [],
   redoStack: [],
@@ -131,6 +246,7 @@ export const useStore = create<EditorState>((set, get) => ({
       chart,
       gridVersion: get().gridVersion + 1,
       dirtyCells: null,
+      chartEpoch: get().chartEpoch + 1,
       filePath: null,
       dirty: false,
       floatWarnings: recompute(chart),
@@ -138,6 +254,7 @@ export const useStore = create<EditorState>((set, get) => ({
       redoStack: [],
       pendingStroke: null,
       activeColor: 1,
+      selection: null,
     });
   },
 
@@ -146,6 +263,7 @@ export const useStore = create<EditorState>((set, get) => ({
       chart,
       gridVersion: get().gridVersion + 1,
       dirtyCells: null,
+      chartEpoch: get().chartEpoch + 1,
       filePath,
       dirty: false,
       floatWarnings: recompute(chart),
@@ -153,6 +271,7 @@ export const useStore = create<EditorState>((set, get) => ({
       redoStack: [],
       pendingStroke: null,
       activeColor: Math.min(1, chart.palette.length - 1),
+      selection: null,
     });
   },
 
@@ -176,6 +295,118 @@ export const useStore = create<EditorState>((set, get) => ({
   setActiveColor: (activeColor) => set({ activeColor }),
   setSquareMode: (squareMode) => set({ squareMode }),
   setShowFloatHighlight: (showFloatHighlight) => set({ showFloatHighlight }),
+  setMirrorAxis: (mirrorAxis) => set({ mirrorAxis }),
+
+  // --- chart size ---
+
+  resizeByEdges: (edges) => {
+    const { chart } = get();
+    const size = { stitches: chart.stitches, rows: chart.rows };
+    let next;
+    try {
+      next = resizeGridByEdges(chart.grid, size, edges);
+    } catch {
+      return; // would leave nothing to knit
+    }
+    if (next.size.stitches === chart.stitches && next.size.rows === chart.rows) return;
+    get().applyStructure('Resize chart', {
+      grid: next.grid,
+      stitches: next.size.stitches,
+      rows: next.size.rows,
+    });
+  },
+
+  resizeTo: (stitches, rows, anchor = DEFAULT_ANCHOR) => {
+    const { chart } = get();
+    if (stitches < 1 || rows < 1) return;
+    if (stitches === chart.stitches && rows === chart.rows) return;
+    const from = { stitches: chart.stitches, rows: chart.rows };
+    const grid = resizeGrid(chart.grid, from, { stitches, rows }, anchor);
+    get().applyStructure('Resize chart', { grid, stitches, rows });
+  },
+
+  cropToContent: () => {
+    const { chart } = get();
+    const size = { stitches: chart.stitches, rows: chart.rows };
+    const bounds = contentBounds(chart.grid, size);
+    if (!bounds) return; // nothing but background
+    if (bounds.w === chart.stitches && bounds.h === chart.rows) return;
+    const next = resizeGridByEdges(chart.grid, size, {
+      top: -bounds.row,
+      left: -bounds.col,
+      bottom: -(chart.rows - (bounds.row + bounds.h)),
+      right: -(chart.stitches - (bounds.col + bounds.w)),
+    });
+    get().applyStructure('Crop to content', {
+      grid: next.grid,
+      stitches: next.size.stitches,
+      rows: next.size.rows,
+    });
+  },
+
+  // --- selection ---
+
+  setSelection: (region) => {
+    const { chart } = get();
+    set({
+      selection: region
+        ? clampRegion(region, { stitches: chart.stitches, rows: chart.rows })
+        : null,
+    });
+  },
+
+  clearSelection: () => set({ selection: null }),
+
+  moveSelection: (toRow, toCol) => {
+    const { chart, selection } = get();
+    if (!selection) return;
+    const size = { stitches: chart.stitches, rows: chart.rows };
+    const cells = moveRegionCells(chart.grid, size, selection, toRow, toCol);
+    if (cells.length === 0) return;
+    get().applyCells('Move selection', cells);
+    set({ selection: clampRegion({ ...selection, row: toRow, col: toCol }, size) });
+  },
+
+  copySelection: () => {
+    const { chart, selection } = get();
+    if (!selection) return;
+    set({
+      clipboard: extractRegion(chart.grid, { stitches: chart.stitches, rows: chart.rows }, selection),
+    });
+  },
+
+  pasteClipboard: (row, col) => {
+    const { chart, clipboard, selection } = get();
+    if (!clipboard || clipboard.w === 0) return;
+    const size = { stitches: chart.stitches, rows: chart.rows };
+    // Default to the current selection's corner, else the top-left.
+    const r = row ?? selection?.row ?? 0;
+    const c = col ?? selection?.col ?? 0;
+    const cells = placeRegion(clipboard, size, r, c);
+    if (cells.length === 0) return;
+    get().applyCells('Paste', cells);
+    set({ selection: clampRegion({ row: r, col: c, w: clipboard.w, h: clipboard.h }, size) });
+  },
+
+  mirrorSelection: (axis) => {
+    const { chart, selection } = get();
+    if (!selection) return;
+    const size = { stitches: chart.stitches, rows: chart.rows };
+    const data = extractRegion(chart.grid, size, selection);
+    if (data.w === 0) return;
+    const flipped = axis === 'horizontal' ? mirrorRegionH(data) : mirrorRegionV(data);
+    get().applyCells(
+      axis === 'horizontal' ? 'Mirror selection ↔' : 'Mirror selection ↕',
+      placeRegion(flipped, size, selection.row, selection.col)
+    );
+  },
+
+  fillSelection: (color) => {
+    const { chart, selection } = get();
+    if (!selection) return;
+    const cells = fillRegionCells(selection, { stitches: chart.stitches, rows: chart.rows }, color);
+    if (cells.length > 0) get().applyCells('Fill selection', cells);
+  },
 
   beginStroke: () => set({ pendingStroke: new Map() }),
 
@@ -213,7 +444,7 @@ export const useStore = create<EditorState>((set, get) => ({
     }
     set({
       pendingStroke: null,
-      undoStack: [...undoStack.slice(-(MAX_HISTORY - 1)), { label, diffs }],
+      undoStack: [...undoStack.slice(-(MAX_HISTORY - 1)), { kind: 'cells', label, diffs }],
       redoStack: [],
       floatWarnings: recomputeTouched(
         chart,
@@ -225,19 +456,25 @@ export const useStore = create<EditorState>((set, get) => ({
 
   applyCells: (label, cells) => {
     const { chart, undoStack, floatWarnings } = get();
-    const diffs: CellDiff[] = [];
+    // Merge repeats so an index appears at most once: undo replays diffs in
+    // order, so two diffs for the same cell would restore the wrong value.
+    const merged = new Map<number, CellDiff>();
     for (const { i, color } of cells) {
-      const before = chart.grid[i];
-      if (before === color) continue;
-      diffs.push({ i, before, after: color });
-      chart.grid[i] = color;
+      const existing = merged.get(i);
+      if (existing) {
+        existing.after = color;
+      } else {
+        merged.set(i, { i, before: chart.grid[i], after: color });
+      }
     }
+    const diffs = [...merged.values()].filter((d) => d.before !== d.after);
     if (diffs.length === 0) return;
+    for (const d of diffs) chart.grid[d.i] = d.after;
     set({
       gridVersion: get().gridVersion + 1,
       dirtyCells: diffs.map((d) => d.i),
       dirty: true,
-      undoStack: [...undoStack.slice(-(MAX_HISTORY - 1)), { label, diffs }],
+      undoStack: [...undoStack.slice(-(MAX_HISTORY - 1)), { kind: 'cells', label, diffs }],
       redoStack: [],
       floatWarnings: recomputeTouched(
         chart,
@@ -247,14 +484,41 @@ export const useStore = create<EditorState>((set, get) => ({
     });
   },
 
+  applyStructure: (label, next) => {
+    const { chart, undoStack } = get();
+    const before = snapshot(chart);
+    const after: Snapshot = {
+      grid: next.grid,
+      stitches: next.stitches ?? chart.stitches,
+      rows: next.rows ?? chart.rows,
+      palette: next.palette ?? chart.palette,
+    };
+    const updated: Chart = { ...chart, ...after };
+    set({
+      chart: updated,
+      gridVersion: get().gridVersion + 1,
+      dirtyCells: null, // shape or palette changed: rebuild the whole raster
+      dirty: true,
+      selection: null,
+      undoStack: [...undoStack.slice(-(MAX_HISTORY - 1)), { kind: 'structure', label, before, after }],
+      redoStack: [],
+      floatWarnings: recompute(updated),
+    });
+  },
+
   undo: () => {
     const { undoStack, redoStack, chart, floatWarnings } = get();
     const cmd = undoStack[undoStack.length - 1];
     if (!cmd) return;
+    const rest = { undoStack: undoStack.slice(0, -1), redoStack: [...redoStack, cmd] };
+
+    if (cmd.kind === 'structure') {
+      set({ ...rest, ...restoreSnapshot(chart, cmd.before), gridVersion: get().gridVersion + 1 });
+      return;
+    }
     for (const d of cmd.diffs) chart.grid[d.i] = d.before;
     set({
-      undoStack: undoStack.slice(0, -1),
-      redoStack: [...redoStack, cmd],
+      ...rest,
       gridVersion: get().gridVersion + 1,
       dirtyCells: cmd.diffs.map((d) => d.i),
       dirty: true,
@@ -270,10 +534,15 @@ export const useStore = create<EditorState>((set, get) => ({
     const { undoStack, redoStack, chart, floatWarnings } = get();
     const cmd = redoStack[redoStack.length - 1];
     if (!cmd) return;
+    const rest = { undoStack: [...undoStack, cmd], redoStack: redoStack.slice(0, -1) };
+
+    if (cmd.kind === 'structure') {
+      set({ ...rest, ...restoreSnapshot(chart, cmd.after), gridVersion: get().gridVersion + 1 });
+      return;
+    }
     for (const d of cmd.diffs) chart.grid[d.i] = d.after;
     set({
-      undoStack: [...undoStack, cmd],
-      redoStack: redoStack.slice(0, -1),
+      ...rest,
       gridVersion: get().gridVersion + 1,
       dirtyCells: cmd.diffs.map((d) => d.i),
       dirty: true,
@@ -312,6 +581,52 @@ export const useStore = create<EditorState>((set, get) => ({
       if (chart.grid[i] === from) cells.push({ i, color: to });
     }
     get().applyCells(`Swap ${from} → ${to}`, cells);
+  },
+
+  deleteColor: (id, replaceWith = 0) => {
+    const { chart, activeColor } = get();
+    if (chart.palette.length <= 1) return; // a chart needs at least one color
+    if (id < 0 || id >= chart.palette.length) return;
+    // Stitches of the removed color become `replaceWith`; if that is the color
+    // being deleted, fall back to the background so nothing dangles.
+    const target = replaceWith === id ? 0 : replaceWith;
+
+    const remap = new Uint8Array(chart.palette.length);
+    for (let old = 0; old < chart.palette.length; old++) {
+      const mapped = old === id ? target : old;
+      // every index above the removed one shifts down by one
+      remap[old] = mapped > id ? mapped - 1 : mapped;
+    }
+    const grid = Uint8Array.from(chart.grid, (v) => remap[v] ?? 0);
+    const palette = chart.palette
+      .filter((_, index) => index !== id)
+      .map((c, index) => ({ ...c, id: index }));
+
+    get().applyStructure(`Delete ${chart.palette[id]?.name || `color ${id}`}`, { grid, palette });
+    set({ activeColor: Math.min(remap[activeColor] ?? 0, palette.length - 1) });
+  },
+
+  reorderColor: (from, to) => {
+    const { chart, activeColor } = get();
+    const n = chart.palette.length;
+    if (from === to || from < 0 || from >= n || to < 0 || to >= n) return;
+
+    const palette = [...chart.palette];
+    const [moved] = palette.splice(from, 1);
+    palette.splice(to, 0, moved);
+
+    // remap[oldIndex] = position that color now occupies
+    const remap = new Uint8Array(n);
+    palette.forEach((color, index) => {
+      remap[chart.palette.indexOf(color)] = index;
+    });
+    const grid = Uint8Array.from(chart.grid, (v) => remap[v] ?? 0);
+
+    get().applyStructure(
+      'Reorder palette',
+      { grid, palette: palette.map((c, index) => ({ ...c, id: index })) }
+    );
+    set({ activeColor: remap[activeColor] ?? 0 });
   },
 }));
 

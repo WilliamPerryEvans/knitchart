@@ -12,6 +12,12 @@ import {
   stitchNumber,
 } from '../domain/labels';
 import { floodFill, lineCells, rectCells, type Cell } from './tools';
+import {
+  mirrorCellIndices,
+  regionContains,
+  regionFromCorners,
+  type Region,
+} from '../domain/region';
 
 const BASE_CELL_W = 14; // css px at zoom 1
 const MIN_ZOOM = 0.05;
@@ -32,10 +38,12 @@ const MARGIN_T = 16;
 const MARGIN_B = 30; // stitch numbers
 
 interface DragState {
-  mode: 'paint' | 'shape' | 'pan';
+  mode: 'paint' | 'shape' | 'pan' | 'marquee' | 'moveSelection';
   start: Cell;
   last: Cell;
   panStart: { x: number; y: number; scrollLeft: number; scrollTop: number } | null;
+  /** Where the selection sat when a move-drag began. */
+  origin?: { row: number; col: number };
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -71,6 +79,9 @@ export function CanvasEditor() {
   const activeColor = useStore((s) => s.activeColor);
   const floatWarnings = useStore((s) => s.floatWarnings);
   const showFloatHighlight = useStore((s) => s.showFloatHighlight);
+  const selection = useStore((s) => s.selection);
+  const clipboard = useStore((s) => s.clipboard);
+  const chartEpoch = useStore((s) => s.chartEpoch);
 
   const cellW = BASE_CELL_W;
   const cellH = squareMode ? BASE_CELL_W : BASE_CELL_W * cellAspect(chart.gauge);
@@ -403,6 +414,45 @@ export function CanvasEditor() {
       octx.globalAlpha = 1;
     }
 
+    // selection: the committed one, or a live preview while dragging
+    const marchingAnts = (region: Region, dashed: boolean) => {
+      const x = panX + region.col * cw;
+      const y = panY + region.row * ch;
+      const width = region.w * cw;
+      const height = region.h * ch;
+      octx.save();
+      octx.fillStyle = 'rgba(79, 140, 201, 0.16)';
+      octx.fillRect(x, y, width, height);
+      // dark under-stroke first so the dashes read on light and dark stitches
+      octx.strokeStyle = 'rgba(0,0,0,0.75)';
+      octx.lineWidth = 1;
+      octx.setLineDash([]);
+      octx.strokeRect(x, y, width, height);
+      if (dashed) octx.setLineDash([5, 4]);
+      octx.strokeStyle = '#fff';
+      octx.lineWidth = 1.5;
+      octx.strokeRect(x, y, width, height);
+      octx.restore();
+    };
+
+    if (drag?.mode === 'marquee') {
+      marchingAnts(regionFromCorners(drag.start, drag.last), true);
+    } else if (drag?.mode === 'moveSelection' && drag.origin && s.selection) {
+      // show where it will land, and where it came from
+      const dRow = drag.last.row - drag.start.row;
+      const dCol = drag.last.col - drag.start.col;
+      octx.save();
+      octx.globalAlpha = 0.35;
+      marchingAnts(s.selection, false);
+      octx.restore();
+      marchingAnts(
+        { ...s.selection, row: drag.origin.row + dRow, col: drag.origin.col + dCol },
+        true
+      );
+    } else if (s.selection) {
+      marchingAnts(s.selection, true);
+    }
+
     // hover cursor
     const hover = hoverRef.current;
     if (hover && !drag) {
@@ -414,7 +464,7 @@ export function CanvasEditor() {
       octx.strokeRect(panX + hover.col * cw, panY + hover.row * ch, cw, ch);
     }
     octx.restore();
-  }, [cellW, cellH, getPan]);
+  }, [cellW, cellH, getPan, drawChrome]);
   drawRef.current = draw;
 
   // resize canvases to the scroll viewport, DPR-aware
@@ -453,15 +503,19 @@ export function CanvasEditor() {
     squareMode,
     floatWarnings,
     showFloatHighlight,
+    selection,
     chart.direction,
     chart.gauge,
+    chart.stitches,
+    chart.rows,
     invalidate,
     syncGeometry,
   ]);
 
-  // fit chart to view when a new/loaded chart arrives
+  // Fit the view only when a different chart arrives. Keyed on chartEpoch
+  // rather than the dimensions, so resizing keeps the current zoom and scroll.
   useEffect(() => {
-    const key = `${chart.created}|${chart.stitches}x${chart.rows}`;
+    const key = String(chartEpoch);
     if (fittedForRef.current === key) return;
     const sc = scrollRef.current;
     if (!sc || sc.clientWidth === 0) return;
@@ -477,7 +531,30 @@ export function CanvasEditor() {
     sc.scrollLeft = (sc.scrollWidth - sc.clientWidth) / 2;
     sc.scrollTop = (sc.scrollHeight - sc.clientHeight) / 2;
     invalidate();
-  }, [chart.created, chart.stitches, chart.rows, cellW, cellH, invalidate, syncGeometry]);
+  }, [chartEpoch, chart.stitches, chart.rows, cellW, cellH, invalidate, syncGeometry]);
+
+  // Dev-only: let the browser test turn a stitch into a screen point using the
+  // editor's own view maths, rather than duplicating (and drifting from) it.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (
+      window as unknown as {
+        __knitView: { cellPoint: (row: number, col: number) => { x: number; y: number } | null };
+      }
+    ).__knitView = {
+      cellPoint: (row, col) => {
+        const el = overlayRef.current;
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        const { panX, panY } = getPan();
+        const zoom = viewRef.current.zoom;
+        return {
+          x: rect.left + panX + (col + 0.5) * cellW * zoom,
+          y: rect.top + panY + (row + 0.5) * cellH * zoom,
+        };
+      },
+    };
+  }, [getPan, cellW, cellH]);
 
   // space key for panning
   useEffect(() => {
@@ -502,17 +579,28 @@ export function CanvasEditor() {
     };
   }, []);
 
-  const applyShape = useCallback((shape: 'rect' | 'line', start: Cell, end: Cell) => {
+  /** Grid indices for cells, expanded by the mirror axis and clipped to the chart. */
+  const indicesFor = useCallback((cells: Cell[]): number[] => {
     const s = useStore.getState();
     const c = s.chart;
-    const cells = shape === 'rect' ? rectCells(start, end, true) : lineCells(start, end);
-    s.applyCells(
-      shape === 'rect' ? 'Rectangle' : 'Line',
-      cells
-        .filter((p) => p.row >= 0 && p.row < c.rows && p.col >= 0 && p.col < c.stitches)
-        .map((p) => ({ i: p.row * c.stitches + p.col, color: s.activeColor }))
-    );
+    const size = { stitches: c.stitches, rows: c.rows };
+    const inside = cells
+      .filter((p) => p.row >= 0 && p.row < c.rows && p.col >= 0 && p.col < c.stitches)
+      .map((p) => p.row * c.stitches + p.col);
+    return mirrorCellIndices(inside, size, s.mirrorAxis);
   }, []);
+
+  const applyShape = useCallback(
+    (shape: 'rect' | 'line', start: Cell, end: Cell) => {
+      const s = useStore.getState();
+      const cells = shape === 'rect' ? rectCells(start, end, true) : lineCells(start, end);
+      s.applyCells(
+        shape === 'rect' ? 'Rectangle' : 'Line',
+        indicesFor(cells).map((i) => ({ i, color: s.activeColor }))
+      );
+    },
+    [indicesFor]
+  );
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -544,7 +632,7 @@ export function CanvasEditor() {
       switch (s.tool) {
         case 'pencil': {
           s.beginStroke();
-          s.paintCell(i, s.activeColor);
+          s.paintCells(indicesFor([cell]).map((idx) => ({ i: idx, color: s.activeColor })));
           dragRef.current = { mode: 'paint', start: cell, last: cell, panStart: null };
           break;
         }
@@ -566,9 +654,27 @@ export function CanvasEditor() {
           invalidate();
           break;
         }
+        case 'select': {
+          // Inside the current selection, drag moves it; anywhere else starts a
+          // new marquee — which doubles as "click outside to deselect".
+          if (s.selection && regionContains(s.selection, cell.row, cell.col)) {
+            dragRef.current = {
+              mode: 'moveSelection',
+              start: cell,
+              last: cell,
+              panStart: null,
+              origin: { row: s.selection.row, col: s.selection.col },
+            };
+          } else {
+            s.setSelection(null);
+            dragRef.current = { mode: 'marquee', start: cell, last: cell, panStart: null };
+          }
+          invalidate();
+          break;
+        }
       }
     },
-    [cellAt, invalidate]
+    [cellAt, invalidate, indicesFor]
   );
 
   const onPointerMove = useCallback(
@@ -589,20 +695,22 @@ export function CanvasEditor() {
       if (drag && cell) {
         const s = useStore.getState();
         if (drag.mode === 'paint') {
-          const c = s.chart;
-          const cells = lineCells(drag.last, cell).map((p) => ({
-            i: p.row * c.stitches + p.col,
+          // fill the gap since the last event so fast drags don't leave holes
+          const cells = indicesFor(lineCells(drag.last, cell)).map((i) => ({
+            i,
             color: s.activeColor,
           }));
           s.paintCells(cells);
           drag.last = cell;
-        } else if (drag.mode === 'shape') {
+        } else if (drag.mode === 'shape' || drag.mode === 'marquee') {
+          drag.last = cell;
+        } else if (drag.mode === 'moveSelection' && drag.origin) {
           drag.last = cell;
         }
       }
       invalidate();
     },
-    [cellAt, invalidate]
+    [cellAt, invalidate, indicesFor]
   );
 
   const onPointerUp = useCallback(
@@ -617,6 +725,14 @@ export function CanvasEditor() {
         s.endStroke('Pencil');
       } else if (drag.mode === 'shape') {
         applyShape(s.tool === 'rect' ? 'rect' : 'line', drag.start, drag.last);
+      } else if (drag.mode === 'marquee') {
+        s.setSelection(regionFromCorners(drag.start, drag.last));
+      } else if (drag.mode === 'moveSelection' && drag.origin) {
+        const dRow = drag.last.row - drag.start.row;
+        const dCol = drag.last.col - drag.start.col;
+        if (dRow !== 0 || dCol !== 0) {
+          s.moveSelection(drag.origin.row + dRow, drag.origin.col + dCol);
+        }
       }
       invalidate();
     },
@@ -698,12 +814,55 @@ export function CanvasEditor() {
           </div>
         </div>
       </div>
+      {tool === 'select' && selection && (
+        <div className="selection-bar">
+          <span className="selection-size">
+            {selection.w} × {selection.h} sts
+          </span>
+          <button title="Copy (Ctrl+C)" onClick={() => useStore.getState().copySelection()}>
+            Copy
+          </button>
+          <button
+            title="Paste (Ctrl+V)"
+            disabled={!clipboard}
+            onClick={() => useStore.getState().pasteClipboard()}
+          >
+            Paste
+          </button>
+          <button
+            title="Flip left to right"
+            onClick={() => useStore.getState().mirrorSelection('horizontal')}
+          >
+            Flip ↔
+          </button>
+          <button
+            title="Flip top to bottom"
+            onClick={() => useStore.getState().mirrorSelection('vertical')}
+          >
+            Flip ↕
+          </button>
+          <button
+            title={`Fill with ${chart.palette[activeColor]?.name ?? 'the active color'}`}
+            onClick={() => useStore.getState().fillSelection(activeColor)}
+          >
+            Fill
+          </button>
+          <button title="Clear to background (Delete)" onClick={() => useStore.getState().fillSelection(0)}>
+            Clear
+          </button>
+          <button title="Deselect (Esc)" onClick={() => useStore.getState().clearSelection()}>
+            Done
+          </button>
+        </div>
+      )}
       <div className="editor-hint">
         {tool === 'pencil' && `Pencil — drag to paint ${chart.palette[activeColor]?.name ?? ''}`}
         {tool === 'fill' && 'Flood fill — click a region'}
         {tool === 'eyedropper' && 'Eyedropper — click to pick up a color'}
         {tool === 'rect' && 'Rectangle — drag corner to corner'}
         {tool === 'line' && 'Line — drag start to end'}
+        {tool === 'select' &&
+          (selection ? 'Drag inside to move · Esc to deselect' : 'Drag to select stitches')}
         {' · wheel zoom · shift+wheel or scrollbars to pan'}
       </div>
     </div>

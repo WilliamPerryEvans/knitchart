@@ -5,6 +5,7 @@ import { Toolbar } from './components/Toolbar';
 import { PalettePanel } from './components/PalettePanel';
 import { WarningsPanel } from './components/WarningsPanel';
 import { NewChartDialog } from './components/NewChartDialog';
+import { ChartSizePanel } from './components/ChartSizePanel';
 import { useStore } from './state/store';
 import { openChart, saveChart } from './io/file';
 import './App.css';
@@ -49,10 +50,32 @@ export default function App() {
             e.preventDefault();
             setShowNew(true);
             return;
+          case 'c':
+            if (s.selection) {
+              e.preventDefault();
+              s.copySelection();
+            }
+            return;
+          case 'v':
+            if (s.clipboard) {
+              e.preventDefault();
+              s.pasteClipboard();
+            }
+            return;
         }
         return;
       }
       if (typing) return;
+
+      if (e.key === 'Escape') {
+        s.clearSelection();
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && s.selection) {
+        e.preventDefault();
+        s.fillSelection(0); // clear back to the background color
+        return;
+      }
 
       switch (e.key.toLowerCase()) {
         case 'b':
@@ -69,6 +92,9 @@ export default function App() {
           break;
         case 'l':
           s.setTool('line');
+          break;
+        case 'm':
+          s.setTool('select');
           break;
         case '[': {
           const n = s.chart.palette.length;
@@ -94,6 +120,7 @@ export default function App() {
         <CanvasEditor />
         <div className="sidebar">
           <PalettePanel />
+          <ChartSizePanel />
           <WarningsPanel />
         </div>
       </div>

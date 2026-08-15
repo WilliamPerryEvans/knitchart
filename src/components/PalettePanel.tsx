@@ -6,12 +6,15 @@ export function PalettePanel() {
   const activeColor = useStore((s) => s.activeColor);
   const [swapFrom, setSwapFrom] = useState(0);
   const [swapTo, setSwapTo] = useState(1);
+  /** Index pending deletion, and what its stitches should become. */
+  const [deleting, setDeleting] = useState<number | null>(null);
+  const [replaceWith, setReplaceWith] = useState(0);
 
   return (
     <div className="panel">
       <h3>Palette</h3>
       <div className="palette-list">
-        {palette.map((c) => (
+        {palette.map((c, index) => (
           <div
             key={c.id}
             className={c.id === activeColor ? 'palette-row active' : 'palette-row'}
@@ -31,10 +34,77 @@ export function PalettePanel() {
               onClick={(e) => e.stopPropagation()}
               onChange={(e) => useStore.getState().updateColor(c.id, { name: e.target.value })}
             />
-            {c.id === activeColor && <span className="palette-active-mark">●</span>}
+            <div className="palette-actions">
+              <button
+                className="mini"
+                title="Move up"
+                disabled={index === 0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useStore.getState().reorderColor(index, index - 1);
+                }}
+              >
+                ▲
+              </button>
+              <button
+                className="mini"
+                title="Move down"
+                disabled={index === palette.length - 1}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useStore.getState().reorderColor(index, index + 1);
+                }}
+              >
+                ▼
+              </button>
+              <button
+                className="mini danger"
+                title="Delete this color"
+                disabled={palette.length <= 1}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeleting(index);
+                  // default the replacement to MC, unless MC is what's going
+                  setReplaceWith(index === 0 ? 1 : 0);
+                }}
+              >
+                ✕
+              </button>
+            </div>
           </div>
         ))}
       </div>
+
+      {deleting !== null && palette[deleting] && (
+        <div className="delete-prompt">
+          <div>
+            Replace every <strong>{palette[deleting].name || `color ${deleting}`}</strong> stitch
+            with:
+          </div>
+          <select value={replaceWith} onChange={(e) => setReplaceWith(+e.target.value)}>
+            {palette.map(
+              (c, index) =>
+                index !== deleting && (
+                  <option key={c.id} value={index}>
+                    {c.name || `Color ${index}`}
+                  </option>
+                )
+            )}
+          </select>
+          <div className="delete-prompt-buttons">
+            <button onClick={() => setDeleting(null)}>Cancel</button>
+            <button
+              className="primary"
+              onClick={() => {
+                useStore.getState().deleteColor(deleting, replaceWith);
+                setDeleting(null);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      )}
       <button
         className="wide"
         disabled={palette.length >= 256}
