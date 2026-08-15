@@ -94,10 +94,35 @@ export async function saveBytes(
     else await writeFile(path, bytes);
     return true;
   }
-  const blob =
+  downloadBlob(
     typeof bytes === 'string'
-      ? new Blob([bytes], { type: extension === 'svg' ? 'image/svg+xml' : 'text/plain' })
-      : new Blob([bytes.buffer as ArrayBuffer], { type: 'image/png' });
-  downloadBlob(blob, defaultName);
+      ? new Blob([bytes], { type: mimeFor(extension) })
+      : new Blob([bytes.buffer as ArrayBuffer], { type: mimeFor(extension) }),
+    defaultName
+  );
   return true;
+}
+
+/**
+ * Downloads need the right content type, not just the right file extension.
+ * Every binary export used to be labelled `image/png`, so a saved PDF arrived
+ * claiming to be an image — which desktop browsers shrug off but Android takes
+ * seriously, offering it to an image viewer or refusing to open it at all.
+ */
+export function mimeFor(extension: string): string {
+  switch (extension.toLowerCase()) {
+    case 'png':
+      return 'image/png';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'pdf':
+      return 'application/pdf';
+    case 'knitchart':
+    case 'json':
+      return 'application/json';
+    case 'txt':
+      return 'text/plain';
+    default:
+      return 'application/octet-stream';
+  }
 }
