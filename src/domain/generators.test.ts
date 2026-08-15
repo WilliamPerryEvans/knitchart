@@ -14,6 +14,7 @@ import {
   generatorLabel,
   inGasket,
   ruleTable,
+  smallestTriangle,
   scaleGrid,
   seedCells,
   seedRowFromChart,
@@ -299,6 +300,63 @@ describe('generateEquilateral', () => {
 
   it('survives a degenerate gauge without dividing by zero', () => {
     expect(() => generateEquilateral(10, 10, 3, 0)).not.toThrow();
+  });
+
+  it('never leaves a blank row inside the triangle', () => {
+    // A gasket pinches to a single point wherever two sub-triangles meet.
+    // Sampling only the stitch centre finds nothing there, which cut the motif
+    // clean in half — at 40x40 depth 1, the row across the join was empty and
+    // the top triangle floated free of the two beneath it.
+    for (const depth of [1, 2, 3]) {
+      for (const [w, h] of [[40, 40], [60, 78], [31, 47]]) {
+        const cells = generateEquilateral(w, h, depth, 20 / 26);
+        const filled = [];
+        for (let r = 0; r < h; r++) {
+          let n = 0;
+          for (let c = 0; c < w; c++) if (cells[r * w + c]) n++;
+          filled.push(n);
+        }
+        const first = filled.findIndex((n) => n > 0);
+        const last = filled.length - 1 - [...filled].reverse().findIndex((n) => n > 0);
+        const blank = filled.slice(first, last + 1).findIndex((n) => n === 0);
+        expect(blank, `depth ${depth} on ${w}x${h}: row ${first + blank} is empty`).toBe(-1);
+      }
+    }
+  });
+
+  it('keeps each row joined to the next, so the motif is one piece', () => {
+    // Neighbouring rows must overlap somewhere, or the chart shows islands.
+    const w = 60;
+    const h = 78;
+    const cells = generateEquilateral(w, h, 3, 20 / 26);
+    const cols = (r: number) => {
+      const set = new Set<number>();
+      for (let c = 0; c < w; c++) if (cells[r * w + c]) set.add(c);
+      return set;
+    };
+    for (let r = 1; r < h; r++) {
+      const above = cols(r - 1);
+      const below = cols(r);
+      if (above.size === 0 || below.size === 0) continue;
+      const touching = [...below].some((c) => above.has(c) || above.has(c - 1) || above.has(c + 1));
+      expect(touching, `row ${r} floats free of row ${r - 1}`).toBe(true);
+    }
+  });
+});
+
+describe('smallestTriangle', () => {
+  it('halves with every level', () => {
+    const one = smallestTriangle(64, 64, 1, 1);
+    const two = smallestTriangle(64, 64, 2, 1);
+    expect(two.stitches).toBe(Math.round(one.stitches / 2));
+    expect(two.rows).toBe(Math.round(one.rows / 2));
+  });
+
+  it('reports the size the chart can actually show', () => {
+    // 40 stitches at worsted fits a 35-stitch base; depth 3 divides it by 8.
+    const s = smallestTriangle(40, 40, 3, 20 / 26);
+    expect(s.stitches).toBeGreaterThan(2);
+    expect(s.stitches).toBeLessThan(6);
   });
 });
 

@@ -26,7 +26,7 @@ repeat generation. The roadmap agreed with the user:
 ```bash
 npm install
 npm run dev          # browser at localhost:5173
-npm test             # vitest, 318 unit tests
+npm test             # vitest, 322 unit tests
 npx tauri dev        # desktop app with hot reload
 npm run install-app  # build, then update the installed desktop app
 npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
@@ -239,13 +239,33 @@ fabric.** Rule 90 grows one column per side per row, which on worsted knits up
 as a wide flat wedge — right maths, wrong shape for a garment panel. The
 `'equilateral'` generator instead works in units of one cell width (a cell being
 `1` wide and `aspect` tall), fits the largest true equilateral triangle inside
-the chart's real proportions, and tests each stitch's centre against the gasket
-with `inGasket` — barycentric coordinates, halved into whichever corner
-sub-triangle the point falls in, or rejected if it lands in the central inverted
-one. Measured on a 60×78 worsted chart the result is 12.0 in across and 10.3 in
+the chart's real proportions, and tests points against the gasket with
+`inGasket` — barycentric coordinates, halved into whichever corner sub-triangle
+the point falls in, or rejected if it lands in the central inverted one.
+Measured on a 60×78 worsted chart the result is 12.0 in across and 10.3 in
 tall: a ratio of 0.859 against the ideal 0.866, the difference being whole
 stitches. On the chart *squares* it reads 1.12, which is the point — a triangle
 that looks equilateral on graph paper does not knit up equilateral.
+
+**Rasterising it needs coverage AND the apexes, not stitch centres.** The first
+version tested each stitch's centre point, and the motif came out in
+disconnected pieces with entirely blank rows across the joins — at 40×40 depth 1
+the top triangle floated free of the two beneath it. A gasket pinches to a
+*single point* wherever two sub-triangles meet, and no stitch centre lands in a
+point. Two things fix it, and both are needed:
+
+- Fill a stitch by how much of it the shape covers (4×4 samples, threshold 0.3),
+  not by its centre. That gives solid edges and stops small triangles
+  disappearing.
+- Mark the stitch containing each sub-triangle's apex outright
+  (`gasketApexes`, the same subdivision that builds the shape). Coverage alone
+  is not enough: when a tip lands exactly on a stitch boundary its coverage
+  splits between the two neighbours and neither passes the threshold — which is
+  what still severed the 60×78 chart after the coverage change went in.
+
+`smallestTriangle` reports what a depth actually costs in stitches, and the
+dialog shows it — depth 3 on a 40-stitch chart leaves the smallest triangle only
+4 sts × 5 rows, and under 3 it says so plainly instead of drawing mush.
 
 **Pan comes from a real scroll container, not a stored offset.** The canvases sit
 inside `.editor-scroll` as a `position: sticky` layer sized to the viewport,
@@ -328,7 +348,7 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Testing
 
-- `npm test` — 318 unit tests. pdf-lib runs in Node, so the PDF export is tested
+- `npm test` — 322 unit tests. pdf-lib runs in Node, so the PDF export is tested
   directly: page counts against the built document, paper sizes, unencodable
   titles, and that the dialog's page estimate always matches what gets saved.
   The rest cover the pure functions: RLE encode/decode

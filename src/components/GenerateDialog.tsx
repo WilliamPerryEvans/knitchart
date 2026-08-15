@@ -8,6 +8,7 @@ import {
   generatorLabel,
   generatorSummary,
   seedRowFromChart,
+  smallestTriangle,
   type GeneratorKind,
   type GeneratorOptions,
   type Origin,
@@ -74,6 +75,7 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
 
   // The equilateral triangle needs the fabric's proportions, not the chart's.
   const aspect = cellAspect(chart.gauge);
+  const smallest = smallestTriangle(width, height, opts.depth, aspect);
 
   /** Options with the gauge and any chart-derived seed row filled in. */
   const resolved = useMemo<GeneratorOptions>(() => {
@@ -248,6 +250,11 @@ export function GenerateDialog({ onClose }: { onClose: () => void }) {
                     <option value={5}>5 — very fine</option>
                   </select>
                 </label>
+                <p className="dialog-note generate-hint">
+                  {smallest.stitches < 3 || smallest.rows < 3
+                    ? `Too fine for this chart — the smallest triangle is only ${smallest.stitches} × ${smallest.rows} stitches. Use fewer levels, or more stitches.`
+                    : `Smallest triangle: ${smallest.stitches} sts × ${smallest.rows} rows.`}
+                </p>
                 <label>
                   Apex points
                   <select

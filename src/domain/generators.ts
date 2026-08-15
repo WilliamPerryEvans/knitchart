@@ -264,15 +264,89 @@ export function inGasket(u: number, v: number, w: number, depth: number): boolea
   return true;
 }
 
+/** Points sampled across each stitch, per axis, when measuring coverage. */
+const COVERAGE_SAMPLES = 4;
+
+/**
+ * Fill a stitch once the shape covers this much of it. Under a half on purpose:
+ * the sub-triangles taper to points, and a stricter threshold eats the tips.
+ */
+const COVERAGE_THRESHOLD = 0.3;
+
+type Point = [number, number];
+
+/**
+ * The apex of every solid sub-triangle, found by the same subdivision that
+ * builds the gasket.
+ *
+ * Coverage alone cannot guarantee these survive: two sub-triangles meet at a
+ * single point, and when that point lands on a stitch boundary its coverage
+ * splits between the two neighbouring stitches so neither passes the threshold
+ * — which severs the motif. Marking the stitch each apex falls in settles the
+ * tie the same way every time.
+ */
+function gasketApexes(a: Point, b: Point, c: Point, depth: number, out: Point[]): void {
+  if (depth <= 0) {
+    out.push(a);
+    return;
+  }
+  const mid = (p: Point, q: Point): Point => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+  const ab = mid(a, b);
+  const ac = mid(a, c);
+  const bc = mid(b, c);
+  gasketApexes(a, ab, ac, depth - 1, out);
+  gasketApexes(ab, b, bc, depth - 1, out);
+  gasketApexes(ac, bc, c, depth - 1, out);
+}
+
 /**
  * A Sierpinski triangle that is actually equilateral **in the finished fabric**.
  *
  * The rule-90 version grows one column per side per row, which on a worsted
  * gauge knits up as a wide, flat wedge — right maths, wrong shape for a garment
  * panel. Here the triangle is drawn geometrically instead: work in units of one
- * cell width, so a cell is 1 wide and `aspect` tall, fit the largest equilateral
- * triangle inside the chart's real proportions, and test each stitch's centre.
+ * cell width, so a cell is 1 wide and `aspect` tall, and fit the largest
+ * equilateral triangle inside the chart's real proportions.
+ *
+ * Stitches are filled by **how much of them the shape covers**, not by whether
+ * their centre happens to land inside it. Testing the centre alone breaks the
+ * motif apart: a gasket pinches to a single point everywhere two sub-triangles
+ * meet, no cell centre lands in a point, and the chart comes out as disconnected
+ * fragments with entirely blank rows across the join.
  */
+/**
+ * The largest equilateral triangle that fits the chart, in units of one cell
+ * width — so a cell is `1` wide and `aspect` tall, and the shape comes out
+ * equilateral in the fabric rather than on the chart squares.
+ */
+function fitEquilateral(width: number, height: number, aspect: number) {
+  const asp = aspect > 0 ? aspect : 1;
+  const chartW = width;
+  const chartH = height * asp;
+  const base = Math.min(chartW, chartH / EQUILATERAL_RATIO);
+  const triH = base * EQUILATERAL_RATIO;
+  return { asp, base, triH, x0: (chartW - base) / 2, y0: (chartH - triH) / 2 };
+}
+
+/**
+ * Size of the smallest solid triangle a given depth produces, in whole stitches
+ * and rows. Each level halves it, so depth runs out of chart quickly: the
+ * dialog uses this to say when a setting is finer than the knitting can show.
+ */
+export function smallestTriangle(
+  width: number,
+  height: number,
+  depth: number,
+  aspect: number
+): { stitches: number; rows: number } {
+  const { asp, base, triH } = fitEquilateral(width, height, aspect);
+  const divisor = 2 ** Math.max(1, depth);
+  return {
+    stitches: Math.round(base / divisor),
+    rows: Math.round(triH / divisor / asp),
+  };
+}
+
 export function generateEquilateral(
   width: number,
   height: number,
@@ -281,15 +355,7 @@ export function generateEquilateral(
 ): Uint8Array {
   const out = new Uint8Array(width * height);
   const levels = Math.max(1, depth);
-  const asp = aspect > 0 ? aspect : 1;
-
-  // Chart size in cell-width units, then the biggest triangle that fits.
-  const chartW = width;
-  const chartH = height * asp;
-  const base = Math.min(chartW, chartH / EQUILATERAL_RATIO);
-  const triH = base * EQUILATERAL_RATIO;
-  const x0 = (chartW - base) / 2;
-  const y0 = (chartH - triH) / 2;
+  const { asp, base, triH, x0, y0 } = fitEquilateral(width, height, aspect);
 
   // Apex top-centre, base along the bottom.
   const ax = x0 + base / 2;
@@ -301,14 +367,35 @@ export function generateEquilateral(
   const den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
   if (den === 0) return out;
 
+  const inside = (px: number, py: number) => {
+    const u = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / den;
+    const v = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / den;
+    return inGasket(u, v, 1 - u - v, levels);
+  };
+
+  const n = COVERAGE_SAMPLES;
+  const needed = n * n * COVERAGE_THRESHOLD;
   for (let r = 0; r < height; r++) {
-    const py = (r + 0.5) * asp;
     for (let c = 0; c < width; c++) {
-      const px = c + 0.5;
-      const u = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / den;
-      const v = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / den;
-      out[r * width + c] = inGasket(u, v, 1 - u - v, levels) ? 1 : 0;
+      let hits = 0;
+      for (let sy = 0; sy < n; sy++) {
+        const py = (r + (sy + 0.5) / n) * asp;
+        for (let sx = 0; sx < n; sx++) {
+          if (inside(c + (sx + 0.5) / n, py)) hits++;
+        }
+      }
+      out[r * width + c] = hits >= needed ? 1 : 0;
     }
+  }
+
+  // Then make sure every sub-triangle's tip is on the chart, so the motif is
+  // one connected piece rather than islands that cannot be knitted as drawn.
+  const apexes: Point[] = [];
+  gasketApexes([ax, ay], [bx, by], [cx, cy], levels, apexes);
+  for (const [px, py] of apexes) {
+    const c = Math.min(width - 1, Math.max(0, Math.floor(px)));
+    const r = Math.min(height - 1, Math.max(0, Math.floor(py / asp)));
+    out[r * width + c] = 1;
   }
   return out;
 }
