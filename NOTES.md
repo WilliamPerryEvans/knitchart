@@ -28,11 +28,26 @@ npm install
 npm run dev          # browser at localhost:5173
 npm test             # vitest, 318 unit tests
 npx tauri dev        # desktop app with hot reload
+npm run install-app  # build, then update the installed desktop app
 npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
 ```
 
 The Rust toolchain is required for the Tauri commands (`rustup`, MSVC target).
 First `tauri build` takes ~6 minutes; later builds are much faster.
+
+**Updating the desktop app: use `npm run install-app`, not the installer.** The
+install is a single `app.exe` next to `uninstall.exe` in
+`%LOCALAPPDATA%\KnitChart`, so `scripts/install-local.mjs` just copies the fresh
+build over it and the existing desktop shortcut picks it up. Running the NSIS
+installer means clicking past an unsigned-publisher SmartScreen warning and a
+wizard every single time, for the same result. `Update KnitChart.cmd` in the
+repo root does the same thing from Explorer for anyone not at a terminal. Both
+stop with a plain message if the app is open, because Windows locks a running
+`.exe` and the copy would otherwise fail with a permissions error.
+
+The NSIS installer is still the right thing for a *first* install on a machine,
+or for giving the app to somebody else — it is what creates the Start menu entry
+and the uninstaller.
 
 ## Layout
 
