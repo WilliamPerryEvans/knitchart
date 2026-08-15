@@ -35,6 +35,29 @@ npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
 The Rust toolchain is required for the Tauri commands (`rustup`, MSVC target).
 First `tauri build` takes ~6 minutes; later builds are much faster.
 
+## The web build
+
+Live at **https://williamperryevans.github.io/knitchart/**, published by
+`.github/workflows/pages.yml` on every push to `main`.
+
+**The same `dist/` serves the desktop app and the website.** Every Tauri call in
+the codebase lives in `src/io/file.ts` behind `isTauri()`, each with a browser
+fallback (download for save, `<input type=file>` for open); nothing else in
+`src/` imports Tauri. So the web version was deployment, not a port — the
+production bundle already painted, generated, and exported PNG/SVG/PDF/
+`.knitchart` correctly the first time it was served.
+
+**Vite's `base` is set only when `GITHUB_PAGES` is in the environment.** Project
+pages serve from `/knitchart/`, but the desktop build loads `dist/` off the
+filesystem and breaks if asset URLs are prefixed. The workflow sets the variable;
+nothing else does. A mistake here breaks the desktop app silently, so check
+`dist/index.html` for a bare `/assets/…` after touching `vite.config.ts`.
+
+Not yet done: the phone layout, touch and pen input, a chart library to replace
+file downloads, and the PWA manifest. On a 412 px screen today the chart gets
+123 px between the toolbar and the sidebar — the desktop layout is intact but
+unusable on a phone.
+
 **Updating the desktop app: use `npm run install-app`, not the installer.** The
 install is a single `app.exe` next to `uninstall.exe` in
 `%LOCALAPPDATA%\KnitChart`, so `scripts/install-local.mjs` just copies the fresh
