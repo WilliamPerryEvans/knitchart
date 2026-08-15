@@ -1,7 +1,9 @@
 # KnitChart — build notes
 
-A desktop knitting chart maker for Windows. React + TypeScript + Vite frontend,
-Canvas 2D chart rendering, Zustand state, wrapped with Tauri v2.
+A knitting chart maker. React + TypeScript + Vite frontend, Canvas 2D chart
+rendering, Zustand state. **One codebase, three outputs**: a Windows desktop app
+via Tauri v2, a website on GitHub Pages, and (in progress) an installable phone
+app. They all build from the same `dist/`.
 
 Background research lives in `../Custom Knitter Technical Build Guide.md`, which
 lays out a ten-phase roadmap; what is built so far is listed below, and the rest
@@ -9,15 +11,33 @@ is deliberately deferred — see "Deliberately not built".
 
 ## Where to pick up
 
-Editor, printing, pattern output, and the pattern generator are done: painting,
-selection, resize, palette management, float checking, PNG/SVG export,
-print-ready multi-page PDF, written instructions, yarn estimates, and fractal /
-repeat generation. The roadmap agreed with the user:
+**Current work: the phone and web version.** Phase 0 is done and deployed; the
+user is testing the live site on their phone before the layout work starts, so
+the next phase should wait on their feedback.
+
+0. ~~Prove the web build, deploy to GitHub Pages~~ — done, see "The web build"
+1. **Touch and pen input** ← next
+2. Phone layout
+3. Chart library and autosave
+4. PWA manifest and service worker
+5. Hands-on pass on the real device
+
+Detail for each is below under "The phone and web plan". The decisions taken
+with the user: **browser-only storage** (no accounts, no backend), **phone**
+rather than tablet, **installable web app** rather than a native APK, and
+**GitHub Pages** hosting. An APK via Tauri Android was considered and passed
+over — it would not improve pen support, because a Tauri Android app is a
+WebView running the same Chromium engine and the same pointer events.
+
+The editor itself is finished for now: painting, selection, resize, palette
+management, float checking, PNG/SVG export, print-ready PDF, written
+instructions, yarn estimates, and the pattern generators. The older roadmap,
+paused while the phone work happens:
 
 1. ~~Print + multi-page PDF~~ — done
 2. ~~Written instructions + yarn/stitch estimates~~ — done
 3. ~~Fractal generator (Sierpinski, Rule 90)~~ — done
-4. **Repeat boxes → knit mode → image import → stitch symbols** ← next
+4. Repeat boxes → knit mode → image import → stitch symbols
 5. AI assistant, last: it needs a key-holding proxy before it does anything, and
    step 3 delivered most of the generative value with none of that infrastructure
 
@@ -57,6 +77,69 @@ Not yet done: the phone layout, touch and pen input, a chart library to replace
 file downloads, and the PWA manifest. On a 412 px screen today the chart gets
 123 px between the toolbar and the sidebar — the desktop layout is intact but
 unusable on a phone.
+
+## The phone and web plan
+
+Phases 1–5, none started. Sized in rough days.
+
+**1 — Touch and pen input (~2–3 days).** The input model is mouse buttons, the
+space bar, the wheel and middle-drag; a phone has none of them.
+`src/editor/CanvasEditor.tsx` needs:
+
+- **Palm rejection, which decides whether this is usable at all.** Once a
+  `pointerType === 'pen'` event has been seen, ignore `touch` pointers for
+  drawing for a short window — otherwise resting a hand paints stitches.
+- **Pinch to zoom, two-finger drag to pan.** Put the maths in a new *pure*
+  `src/editor/gestures.ts` so it is unit tested like `domain/region.ts`. It must
+  fold into the scroll-container model rather than fight it: `getPan()` derives
+  the origin from `scrollLeft`/`scrollTop`, and the wheel handler already
+  re-derives scroll offset after a zoom — pinch reuses that path.
+- **Pen barrel button and eraser end → paint the background colour**
+  (`pointerType === 'pen'`, `button` 5).
+- Audit the keyboard shortcuts for on-screen equivalents. Most are covered
+  (Escape → "Done", Delete → "Clear", Ctrl+C/V → Copy/Paste, tools → toolbar);
+  anything keyboard-only becomes unreachable.
+
+**2 — Phone layout (~2–3 days).** Breakpoint at `max-width: 720px`; above it the
+desktop layout must not change. Top bar collapses to a title plus a menu; the
+left toolbar becomes a bottom dock; the sidebar panels become a bottom sheet.
+Touch targets ≥ 44 px (the `.mini` palette buttons are 9 px text today).
+`viewport-fit=cover` plus `env(safe-area-inset-*)` or the dock sits under the
+gesture bar. `overscroll-behavior: none` to kill pull-to-refresh mid-stroke.
+`.editor-overlay` already has `touch-action: none`, which is right. The floating
+`.selection-bar` must not collide with the dock.
+
+**3 — Chart library and autosave (~2 days).** On a phone, "save" currently means
+downloading into a Downloads folder, which nobody will do twice. New
+`src/io/library.ts`, an IndexedDB store of `{id, title, modified, thumbnail,
+file}` where `file` is the existing validated `KnitChartFile` JSON — reuse
+`chartToFile`/`fileToChart` from `src/model/chartFile.ts` rather than inventing a
+second format. **Autosave the working chart**: mobile browsers evict tabs without
+warning, and unsaved work has already been lost once on this project. Keep
+`src/io/file.ts` as-is for desktop; this sits alongside it.
+
+**4 — Installable app (~1 day).** `vite-plugin-pwa`: manifest, icons (reuse
+`src-tauri/icons/`), service worker caching the app shell. `dist/` is 734 KB, so
+it caches comfortably offline. `display: standalone`, dark theme colour, portrait.
+Until this lands there is no "Install app" prompt on Android.
+
+**5 — Hands-on pass on the real device.** Pen behaviour cannot be emulated.
+
+### Risks to watch
+
+- **10 px per stitch.** A 40-stitch chart across a 412 px screen is the core
+  ergonomic problem and no layout work fixes it — zoom quality is the answer.
+  Most likely thing to need a second round.
+- **PDF in mobile memory.** pdf-lib builds the document in RAM; a 300×300 chart
+  may be too much for a phone. The one-page default helps. Test early.
+- **The bundle is 704 KB** (264 KB gzipped), mostly pdf-lib, loaded eagerly. If
+  first load is slow over mobile data, lazy-load `src/io/pdf.ts` behind the PDF
+  and Pattern dialogs — it is already isolated enough to make that easy.
+- **`window.__knitStore` is DEV-only**, so the puppeteer harness cannot drive the
+  deployed site. Test against the dev server, as now.
+- **If this is ever embedded in another site**, browsers partition or block
+  storage in cross-site iframes, so the chart library would not work there — an
+  embedded copy would have to be download-only.
 
 **Updating the desktop app: use `npm run install-app`, not the installer.** The
 install is a single `app.exe` next to `uninstall.exe` in
