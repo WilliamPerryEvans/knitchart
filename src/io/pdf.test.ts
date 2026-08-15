@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
-import { estimatePages, exportPdf, stitchCounts, type PdfOptions } from './pdf';
+import { estimatePages, exportPdf, type PdfOptions } from './pdf';
+import { stitchCounts } from '../domain/yarnEstimate';
 import { createChart, type Chart } from '../model/types';
 
 const gauge = { stsPer4in: 20, rowsPer4in: 26, unit: 'in' as const };
@@ -87,6 +88,36 @@ describe('exportPdf', () => {
   });
 });
 
+describe('appended sections', () => {
+  it('adds pages for written instructions', async () => {
+    const chart = chartWith(20, 30);
+    const plain = await pageCount(await exportPdf(chart));
+    const withText = await pageCount(await exportPdf(chart, { includeInstructions: true }));
+    expect(withText).toBeGreaterThan(plain);
+  });
+
+  it('adds a page for the yarn estimate', async () => {
+    const chart = chartWith(20, 16);
+    const plain = await pageCount(await exportPdf(chart));
+    const withYarn = await pageCount(await exportPdf(chart, { includeYarnEstimate: true }));
+    expect(withYarn).toBe(plain + 1);
+  });
+
+  it('flows long instructions onto further pages', async () => {
+    const short = await pageCount(await exportPdf(chartWith(20, 20), { includeInstructions: true }));
+    const long = await pageCount(await exportPdf(chartWith(20, 200), { includeInstructions: true }));
+    expect(long).toBeGreaterThan(short);
+  });
+
+  it('leaves the estimate out of the page count when not requested', () => {
+    const chart = chartWith(20, 16);
+    // estimatePages counts chart pages only, which is what the dialog promises
+    expect(estimatePages(chart, { includeYarnEstimate: true })).toBe(
+      estimatePages(chart, { includeYarnEstimate: false })
+    );
+  });
+});
+
 describe('estimatePages', () => {
   const cases: Array<Partial<PdfOptions>> = [
     { cellSizeMm: 6 },
@@ -117,7 +148,7 @@ describe('stitchCounts', () => {
     const chart = chartWith(12, 9);
     const counts = stitchCounts(chart);
     expect(counts).toHaveLength(chart.palette.length);
-    expect(counts.reduce((a, b) => a + b, 0)).toBe(12 * 9);
+    expect(counts.reduce((a: number, b: number) => a + b, 0)).toBe(12 * 9);
   });
 
   it('counts a solid chart entirely as one color', () => {

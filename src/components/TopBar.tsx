@@ -5,7 +5,15 @@ import { exportPng, exportSvg } from '../io/export';
 import { finishedSize } from '../model/gauge';
 import { CUSTOM_WEIGHT_ID, YARN_WEIGHTS, matchYarnWeight, yarnWeightById } from '../domain/yarn';
 
-export function TopBar({ onNewChart, onPrint }: { onNewChart: () => void; onPrint: () => void }) {
+export function TopBar({
+  onNewChart,
+  onPrint,
+  onPattern,
+}: {
+  onNewChart: () => void;
+  onPrint: () => void;
+  onPattern: () => void;
+}) {
   const chart = useStore((s) => s.chart);
   const dirty = useStore((s) => s.dirty);
   const filePath = useStore((s) => s.filePath);
@@ -58,6 +66,9 @@ export function TopBar({ onNewChart, onPrint }: { onNewChart: () => void; onPrin
         <button onClick={() => doSave(true)}>Save As</button>
         <button onClick={onPrint} title="Print or save a PDF to knit from">
           PDF
+        </button>
+        <button onClick={onPattern} title="Written instructions and yarn estimate">
+          Pattern
         </button>
         <button onClick={() => doExport('png')} disabled={busy}>
           PNG

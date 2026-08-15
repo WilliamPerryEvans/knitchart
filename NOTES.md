@@ -3,18 +3,19 @@
 A desktop knitting chart maker for Windows. React + TypeScript + Vite frontend,
 Canvas 2D chart rendering, Zustand state, wrapped with Tauri v2.
 
-Background research lives in `../Custom Knitter Technical Build Guide.md`. This
-app implements **the core editor only** — see "Deliberately not built" below.
+Background research lives in `../Custom Knitter Technical Build Guide.md`, which
+lays out a ten-phase roadmap; what is built so far is listed below, and the rest
+is deliberately deferred — see "Deliberately not built".
 
 ## Where to pick up
 
-The editor and printing are done: painting, selection, resize, palette
-management, float checking, PNG/SVG export, and print-ready multi-page PDF.
-The roadmap agreed with the user, in order:
+Editor, printing, and pattern output are done: painting, selection, resize,
+palette management, float checking, PNG/SVG export, print-ready multi-page PDF,
+written instructions, and yarn estimates. The roadmap agreed with the user:
 
 1. ~~Print + multi-page PDF~~ — done
-2. **Written instructions + yarn/stitch estimates** ← next
-3. Fractal generator — Sierpinski and Rule 90, purely local, no AI needed
+2. ~~Written instructions + yarn/stitch estimates~~ — done
+3. **Fractal generator** (Sierpinski, Rule 90) ← next; purely local, no AI
 4. Repeat boxes → knit mode → image import → stitch symbols
 5. AI assistant, last: it needs a key-holding proxy before it does anything, and
    step 3 delivers most of the generative value with none of that infrastructure
@@ -24,7 +25,7 @@ The roadmap agreed with the user, in order:
 ```bash
 npm install
 npm run dev          # browser at localhost:5173
-npm test             # vitest, 146 unit tests
+npm test             # vitest, 242 unit tests
 npx tauri dev        # desktop app with hot reload
 npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
 ```
@@ -38,12 +39,12 @@ First `tauri build` takes ~6 minutes; later builds are much faster.
 src/
   model/     types, RLE codec, .knitchart file <-> Chart, gauge math
   domain/    float checker, label conventions, region geometry, page tiling,
-             yarn presets
+             written instructions, yarn estimates, yarn presets
   state/     Zustand store + undo/redo command stack
   editor/    Canvas render loop, tool geometry (line/rect/flood fill)
   components/ TopBar, Toolbar, PalettePanel, ChartSizePanel, WarningsPanel,
-              NewChartDialog
-  io/        save/open, PNG + SVG export, print-ready PDF
+              NewChartDialog, PdfDialog, PatternDialog
+  io/        save/open, PNG + SVG export, print-ready PDF + pattern pages
 src-tauri/   Rust shell, NSIS bundle config, fs/dialog permissions
 ```
 
@@ -128,6 +129,24 @@ glyphs it cannot encode and the ← → arrows are drawn as triangles rather tha
 text; and the overlap guide gets a white casing under its dashes, because a
 plain red line vanishes over red or navy stitches.
 
+**Reading direction is the thing to get right in written instructions.** Row 1
+is the bottom of the chart. A RS row is worked right-to-left across the chart and
+knitted; a WS row is worked left-to-right and purled; every round is worked
+right-to-left and knitted. `workingOrder` reverses the row for RS, so the text
+starts where the knitter starts — reading a row the wrong way produces a mirrored
+garment. Repeats collapse only when a period of 2 or more saves a full cycle; a
+period of 1 means every row is identical, and "Rows 1–8: k2 MC" reads better than
+"Row 1: … / Rows 2–8: repeat row 1".
+
+**The yarn estimate counts floats, not just stitches.** A colour is carried
+behind the work whenever it is in play but not being knitted, so a sparse
+contrast colour can need far more yarn than its stitch count suggests — in the
+Sierpinski test chart CC1 knits 585 stitches but carries 1,179. Worked flat a
+colour is carried only between its first and last use in a row; in the round the
+yarn travels the full circumference. Absent from a row, it is not carried at all.
+The per-stitch figure is a rule of thumb (~3x stitch width) with a stated margin,
+so the UI calls it an estimate rather than a shopping list.
+
 **Pan comes from a real scroll container, not a stored offset.** The canvases sit
 inside `.editor-scroll` as a `position: sticky` layer sized to the viewport,
 over a spacer sized to the zoomed chart — so the browser draws genuine
@@ -199,7 +218,7 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Testing
 
-- `npm test` — 189 unit tests. pdf-lib runs in Node, so the PDF export is tested
+- `npm test` — 242 unit tests. pdf-lib runs in Node, so the PDF export is tested
   directly: page counts against the built document, paper sizes, unencodable
   titles, and that the dialog's page estimate always matches what gets saved.
   The rest cover the pure functions: RLE encode/decode

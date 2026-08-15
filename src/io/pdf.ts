@@ -10,6 +10,8 @@ import {
   stitchLabelStep,
   stitchNumber,
 } from '../domain/labels';
+import { estimateYarn, formatLength, stitchCounts } from '../domain/yarnEstimate';
+import { blockLabel, instructionBlocks, rowInstructions } from '../domain/instructions';
 import {
   fitCellSize,
   mmToPoints,
@@ -32,6 +34,10 @@ export interface PdfOptions {
   /** Ignore gauge and draw square cells. */
   squareCells: boolean;
   includeLegend: boolean;
+  /** Append row-by-row written instructions after the chart. */
+  includeInstructions: boolean;
+  /** Append the per-colour yarn estimate. */
+  includeYarnEstimate: boolean;
 }
 
 export const DEFAULT_PDF_OPTIONS: PdfOptions = {
@@ -41,6 +47,8 @@ export const DEFAULT_PDF_OPTIONS: PdfOptions = {
   overlap: 2,
   squareCells: false,
   includeLegend: true,
+  includeInstructions: false,
+  includeYarnEstimate: false,
 };
 
 const MARGIN = 36; // 0.5in
@@ -142,12 +150,6 @@ function noteY(chart: Chart, includeLegend: boolean): number {
   return MARGIN + footerHeight(chart, includeLegend) - NOTE_H;
 }
 
-/** Stitch counts per palette entry, for the legend. */
-export function stitchCounts(chart: Chart): number[] {
-  const counts = new Array(chart.palette.length).fill(0);
-  for (const v of chart.grid) if (v < counts.length) counts[v]++;
-  return counts;
-}
 
 function drawHeader(
   page: PDFPage,
@@ -404,6 +406,164 @@ function drawOverlapGuides(
   }
 }
 
+/**
+ * Flowing text pages appended after the chart. Returns a callable that starts a
+ * fresh page whenever the current one runs out, so callers just emit lines.
+ */
+function textPager(
+  doc: PDFDocument,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  chart: Chart,
+  pageW: number,
+  pageH: number
+) {
+  let page: PDFPage | null = null;
+  let y = 0;
+
+  const newPage = (heading: string) => {
+    page = doc.addPage([pageW, pageH]);
+    drawHeader(page, fonts, chart, heading, pageW, pageH);
+    y = pageH - MARGIN - HEADER_H;
+  };
+
+  return {
+    /** Emit one line, breaking to a new page when the margin is reached. */
+    line(text: string, opts: { size?: number; bold?: boolean; gap?: number; heading?: string } = {}) {
+      const size = opts.size ?? 8.5;
+      const lineH = size + 3.5;
+      if (!page || y - lineH < MARGIN) newPage(opts.heading ?? '');
+      y -= lineH;
+      const font = opts.bold ? fonts.bold : fonts.regular;
+      // Wrap long instruction rows rather than letting them run off the page.
+      const maxW = pageW - MARGIN * 2;
+      const words = safeText(text).split(' ');
+      let current = '';
+      const flush = () => {
+        if (!current) return;
+        page!.drawText(current, { x: MARGIN, y, size, font, color: INK });
+        current = '';
+      };
+      for (const word of words) {
+        const candidate = current ? `${current} ${word}` : word;
+        if (font.widthOfTextAtSize(candidate, size) > maxW && current) {
+          flush();
+          y -= lineH;
+          if (y < MARGIN) {
+            newPage(opts.heading ?? '');
+            y -= lineH;
+          }
+          current = `    ${word}`; // indent the continuation
+        } else {
+          current = candidate;
+        }
+      }
+      flush();
+      if (opts.gap) y -= opts.gap;
+    },
+    /**
+     * One table row. Helvetica is proportional, so columns are placed at fixed
+     * x offsets rather than padded with spaces — padding only lines up while
+     * every value happens to be the same width.
+     */
+    columns(
+      cells: Array<{ text: string; x: number; align?: 'left' | 'right' }>,
+      opts: { size?: number; bold?: boolean; heading?: string } = {}
+    ) {
+      const size = opts.size ?? 8.5;
+      const lineH = size + 3.5;
+      if (!page || y - lineH < MARGIN) newPage(opts.heading ?? '');
+      y -= lineH;
+      const font = opts.bold ? fonts.bold : fonts.regular;
+      for (const cell of cells) {
+        const text = safeText(cell.text);
+        const w = cell.align === 'right' ? font.widthOfTextAtSize(text, size) : 0;
+        page!.drawText(text, { x: MARGIN + cell.x - w, y, size, font, color: INK });
+      }
+    },
+    startSection(heading: string) {
+      newPage(heading);
+    },
+  };
+}
+
+function drawInstructionPages(
+  doc: PDFDocument,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  chart: Chart,
+  pageW: number,
+  pageH: number
+) {
+  const pager = textPager(doc, fonts, chart, pageW, pageH);
+  const round = chart.direction === 'round';
+  pager.startSection('Written instructions');
+  pager.line('Written instructions', { size: 12, bold: true, gap: 4 });
+  pager.line(
+    round
+      ? 'Every round is worked right to left, knitting all stitches.'
+      : 'RS rows are knitted right to left; WS rows are purled left to right.',
+    { size: 8, gap: 6 }
+  );
+
+  for (const block of instructionBlocks(rowInstructions(chart))) {
+    if (block.kind === 'repeat') {
+      const noun = round ? 'rnds' : 'rows';
+      const target =
+        block.repeatFrom === block.repeatTo
+          ? `${noun.slice(0, -1)} ${block.repeatFrom}`
+          : `${noun} ${block.repeatFrom}–${block.repeatTo}`;
+      pager.line(`${blockLabel(chart, block)}: repeat ${target}.`, { heading: 'Written instructions' });
+    } else {
+      pager.line(`${blockLabel(chart, block)}: ${block.body}. (${block.stitches} sts)`, {
+        heading: 'Written instructions',
+      });
+    }
+  }
+}
+
+function drawYarnPage(
+  doc: PDFDocument,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  chart: Chart,
+  pageW: number,
+  pageH: number
+) {
+  const pager = textPager(doc, fonts, chart, pageW, pageH);
+  pager.startSection('Yarn estimate');
+  pager.line('Yarn estimate', { size: 12, bold: true, gap: 4 });
+  pager.line(
+    'Includes yarn carried behind the work as floats, and a 15% margin. ' +
+      'Yarn use varies with fibre, needles, and tension, so treat these as ' +
+      'planning figures and buy a little over.',
+    { size: 8, gap: 8 }
+  );
+  const COLS = { name: 0, knit: 190, carried: 260, length: 380 };
+  pager.columns(
+    [
+      { text: 'Colour', x: COLS.name },
+      { text: 'Knitted', x: COLS.knit, align: 'right' },
+      { text: 'Carried', x: COLS.carried, align: 'right' },
+      { text: 'Estimate', x: COLS.length, align: 'right' },
+    ],
+    { bold: true }
+  );
+
+  for (const usage of estimateYarn(chart)) {
+    pager.columns(
+      [
+        { text: usage.name, x: COLS.name },
+        { text: usage.knitStitches.toLocaleString('en-US'), x: COLS.knit, align: 'right' },
+        { text: usage.carriedStitches.toLocaleString('en-US'), x: COLS.carried, align: 'right' },
+        {
+          text: `${formatLength(usage, 'yd')} / ${formatLength(usage, 'm')}`,
+          x: COLS.length,
+          align: 'right',
+        },
+      ],
+      { heading: 'Yarn estimate' }
+    );
+  }
+}
+
 /** Render the chart to a print-ready PDF. Returns the file bytes. */
 export async function exportPdf(chart: Chart, options: Partial<PdfOptions> = {}): Promise<Uint8Array> {
   const opts = { ...DEFAULT_PDF_OPTIONS, ...options };
@@ -475,6 +635,9 @@ export async function exportPdf(chart: Chart, options: Partial<PdfOptions> = {})
     drawTile(page, fonts, chart, tile, m, originX, topY);
     drawOverlapGuides(page, tile, layout, m, originX, topY, opts.overlap);
   }
+
+  if (opts.includeInstructions) drawInstructionPages(doc, fonts, chart, pageW, pageH);
+  if (opts.includeYarnEstimate) drawYarnPage(doc, fonts, chart, pageW, pageH);
 
   if (multi && opts.overlap > 0) {
     // One line explaining the dashed guides, on the first page only.

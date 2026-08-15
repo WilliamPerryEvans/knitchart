@@ -620,6 +620,97 @@ button.anchor.on {
   margin: 0 0 10px;
 }
 
+.dialog-wide {
+  width: 620px;
+}
+
+.tab-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+button.tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--text-dim);
+  padding: 6px 10px;
+}
+
+button.tab.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.pattern-scroll {
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+
+.pattern-line {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 1px 0;
+}
+
+.pattern-label {
+  flex-shrink: 0;
+  min-width: 108px;
+  color: var(--text-dim);
+}
+
+.pattern-repeat {
+  color: var(--accent);
+}
+
+.yarn-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.yarn-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 2px 6px 6px 0;
+  font-size: 11px;
+}
+
+.yarn-table td {
+  padding: 3px 6px 3px 0;
+  border-top: 1px solid var(--border);
+}
+
+.yarn-table td:not(:first-child),
+.yarn-table th:not(:first-child) {
+  text-align: right;
+}
+
+.yarn-swatch {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  margin-right: 7px;
+  vertical-align: -1px;
+}
+
+.yarn-alt {
+  color: var(--text-dim);
+}
+
 .dialog-buttons {
   display: flex;
   justify-content: flex-end;

@@ -122,19 +122,36 @@ export function PdfDialog({ onClose }: { onClose: () => void }) {
           />
           Square cells instead of gauge proportions
         </label>
+        <label className="checkbox-label dialog-check">
+          <input
+            type="checkbox"
+            checked={opts.includeInstructions}
+            onChange={(e) => set('includeInstructions', e.target.checked)}
+          />
+          Add written instructions after the chart
+        </label>
+        <label className="checkbox-label dialog-check">
+          <input
+            type="checkbox"
+            checked={opts.includeYarnEstimate}
+            onChange={(e) => set('includeYarnEstimate', e.target.checked)}
+          />
+          Add the yarn estimate
+        </label>
 
         <p className="dialog-note">
           {pages === 0
             ? 'Stitches are too big for this page — pick a smaller size, bigger paper, or landscape.'
             : pages === 1
-              ? 'Fits on a single page.'
-              : `${pages} pages, to be taped together${
+              ? 'The chart fits on a single page.'
+              : `${pages} chart pages, to be taped together${
                   opts.overlap > 0
                     ? `. Neighbouring pages share ${opts.overlap} ${
                         opts.overlap === 1 ? 'stitch' : 'stitches'
                       }, marked with a dashed line.`
                     : '.'
                 }`}
+          {(opts.includeInstructions || opts.includeYarnEstimate) && pages > 0 && ' Extra pages follow.'}
         </p>
         {error && <p className="dialog-error">{error}</p>}
 

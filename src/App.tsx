@@ -7,6 +7,7 @@ import { WarningsPanel } from './components/WarningsPanel';
 import { NewChartDialog } from './components/NewChartDialog';
 import { ChartSizePanel } from './components/ChartSizePanel';
 import { PdfDialog } from './components/PdfDialog';
+import { PatternDialog } from './components/PatternDialog';
 import { useStore } from './state/store';
 import { openChart, saveChart } from './io/file';
 import './App.css';
@@ -14,6 +15,7 @@ import './App.css';
 export default function App() {
   const [showNew, setShowNew] = useState(false);
   const [showPdf, setShowPdf] = useState(false);
+  const [showPattern, setShowPattern] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -122,7 +124,11 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar onNewChart={() => setShowNew(true)} onPrint={() => setShowPdf(true)} />
+      <TopBar
+        onNewChart={() => setShowNew(true)}
+        onPrint={() => setShowPdf(true)}
+        onPattern={() => setShowPattern(true)}
+      />
       <div className="main">
         <Toolbar />
         <CanvasEditor />
@@ -134,6 +140,7 @@ export default function App() {
       </div>
       {showNew && <NewChartDialog onClose={() => setShowNew(false)} />}
       {showPdf && <PdfDialog onClose={() => setShowPdf(false)} />}
+      {showPattern && <PatternDialog onClose={() => setShowPattern(false)} />}
     </div>
   );
 }
