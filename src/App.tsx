@@ -6,12 +6,14 @@ import { PalettePanel } from './components/PalettePanel';
 import { WarningsPanel } from './components/WarningsPanel';
 import { NewChartDialog } from './components/NewChartDialog';
 import { ChartSizePanel } from './components/ChartSizePanel';
+import { PdfDialog } from './components/PdfDialog';
 import { useStore } from './state/store';
 import { openChart, saveChart } from './io/file';
 import './App.css';
 
 export default function App() {
   const [showNew, setShowNew] = useState(false);
+  const [showPdf, setShowPdf] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -49,6 +51,12 @@ export default function App() {
           case 'n':
             e.preventDefault();
             setShowNew(true);
+            return;
+          case 'p':
+            // Our PDF lays the chart out properly across pages; the browser's
+            // print of the canvas would not.
+            e.preventDefault();
+            setShowPdf(true);
             return;
           case 'c':
             if (s.selection) {
@@ -114,7 +122,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar onNewChart={() => setShowNew(true)} />
+      <TopBar onNewChart={() => setShowNew(true)} onPrint={() => setShowPdf(true)} />
       <div className="main">
         <Toolbar />
         <CanvasEditor />
@@ -125,6 +133,7 @@ export default function App() {
         </div>
       </div>
       {showNew && <NewChartDialog onClose={() => setShowNew(false)} />}
+      {showPdf && <PdfDialog onClose={() => setShowPdf(false)} />}
     </div>
   );
 }

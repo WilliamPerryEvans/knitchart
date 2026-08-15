@@ -8,11 +8,12 @@ app implements **the core editor only** — see "Deliberately not built" below.
 
 ## Where to pick up
 
-The editor is complete: painting, selection, resize, palette management, float
-checking, and export all work. The roadmap agreed with the user, in order:
+The editor and printing are done: painting, selection, resize, palette
+management, float checking, PNG/SVG export, and print-ready multi-page PDF.
+The roadmap agreed with the user, in order:
 
-1. **Print + multi-page PDF** (pdf-lib, tiling with overlap and repeated labels)
-2. Written instructions + yarn/stitch estimates
+1. ~~Print + multi-page PDF~~ — done
+2. **Written instructions + yarn/stitch estimates** ← next
 3. Fractal generator — Sierpinski and Rule 90, purely local, no AI needed
 4. Repeat boxes → knit mode → image import → stitch symbols
 5. AI assistant, last: it needs a key-holding proxy before it does anything, and
@@ -36,12 +37,13 @@ First `tauri build` takes ~6 minutes; later builds are much faster.
 ```
 src/
   model/     types, RLE codec, .knitchart file <-> Chart, gauge math
-  domain/    float checker, label conventions, region geometry, yarn presets
+  domain/    float checker, label conventions, region geometry, page tiling,
+             yarn presets
   state/     Zustand store + undo/redo command stack
   editor/    Canvas render loop, tool geometry (line/rect/flood fill)
   components/ TopBar, Toolbar, PalettePanel, ChartSizePanel, WarningsPanel,
               NewChartDialog
-  io/        save/open, PNG + SVG export
+  io/        save/open, PNG + SVG export, print-ready PDF
 src-tauri/   Rust shell, NSIS bundle config, fs/dialog permissions
 ```
 
@@ -110,6 +112,21 @@ mirror, rotate, fill), so move/copy/paste/flip all route through the existing
 to palette index 0, the documented background slot. Escape or a click outside
 deselects — the first person to use the app assumed the float highlighting was a
 selection and expected exactly that, so the real selection honors it.
+
+**The PDF is the print path; there is no separate print stylesheet.** A browser
+print of the canvas cannot tile a 100-stitch chart across sheets, so Ctrl+P opens
+the PDF dialog instead. Keeping one layout engine means paper always matches
+what the dialog promised.
+
+Page geometry is deliberately identical on every page — fixed header, fixed
+footer holding the key and gauge line, grid in between — so tiles line up and
+any single page can be knitted from on its own. `domain/pageLayout.ts` holds the
+pure tiling maths (`tileStarts` guarantees forward progress even if overlap is
+set larger than a page, which would otherwise loop forever). Two drawing details
+worth keeping: the built-in Helvetica is WinAnsi-only, so `safeText` replaces
+glyphs it cannot encode and the ← → arrows are drawn as triangles rather than
+text; and the overlap guide gets a white casing under its dashes, because a
+plain red line vanishes over red or navy stitches.
 
 **Pan comes from a real scroll container, not a stored offset.** The canvases sit
 inside `.editor-scroll` as a `position: sticky` layer sized to the viewport,
@@ -182,7 +199,10 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Testing
 
-- `npm test` — 146 unit tests over the pure functions: RLE encode/decode
+- `npm test` — 189 unit tests. pdf-lib runs in Node, so the PDF export is tested
+  directly: page counts against the built document, paper sizes, unencodable
+  titles, and that the dialog's page estimate always matches what gets saved.
+  The rest cover the pure functions: RLE encode/decode
   (round-trips, malformed input), gauge math, float checker (flat, in the round,
   wrap, thresholds, incremental vs full rescan), label conventions (row/stitch
   numbering, RS/WS, label thinning), yarn-weight presets, region geometry

@@ -599,6 +599,27 @@ button.anchor.on {
   margin: 6px 0 12px;
 }
 
+/* needs to outrank `.dialog label`, which stacks its contents in a column */
+.dialog label.dialog-check {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  margin-bottom: 7px;
+  cursor: pointer;
+}
+
+.dialog label.dialog-check input {
+  width: auto;
+  margin: 0;
+}
+
+.dialog-error {
+  font-size: 12px;
+  color: #ff8787;
+  margin: 0 0 10px;
+}
+
 .dialog-buttons {
   display: flex;
   justify-content: flex-end;
