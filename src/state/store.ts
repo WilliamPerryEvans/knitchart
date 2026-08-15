@@ -156,6 +156,14 @@ interface EditorState {
     next: { grid: Uint8Array; stitches?: number; rows?: number; palette?: PaletteColor[] }
   ) => void;
 
+  /**
+   * Swap in a whole new grid of the same size as one undo step. The pattern
+   * generators rewrite most of the chart at once, so a snapshot is cheaper than
+   * up to 90,000 cell diffs. The selection survives because the size hasn't
+   * changed — you may well want to mirror what you just generated.
+   */
+  replaceGrid: (label: string, grid: Uint8Array) => void;
+
   undo: () => void;
   redo: () => void;
 
@@ -504,6 +512,13 @@ export const useStore = create<EditorState>((set, get) => ({
       redoStack: [],
       floatWarnings: recompute(updated),
     });
+  },
+
+  replaceGrid: (label, grid) => {
+    const { chart, selection } = get();
+    if (grid.length !== chart.grid.length) return;
+    get().applyStructure(label, { grid });
+    if (selection) set({ selection });
   },
 
   undo: () => {

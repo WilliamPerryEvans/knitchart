@@ -9,23 +9,24 @@ is deliberately deferred — see "Deliberately not built".
 
 ## Where to pick up
 
-Editor, printing, and pattern output are done: painting, selection, resize,
-palette management, float checking, PNG/SVG export, print-ready multi-page PDF,
-written instructions, and yarn estimates. The roadmap agreed with the user:
+Editor, printing, pattern output, and the pattern generator are done: painting,
+selection, resize, palette management, float checking, PNG/SVG export,
+print-ready multi-page PDF, written instructions, yarn estimates, and fractal /
+repeat generation. The roadmap agreed with the user:
 
 1. ~~Print + multi-page PDF~~ — done
 2. ~~Written instructions + yarn/stitch estimates~~ — done
-3. **Fractal generator** (Sierpinski, Rule 90) ← next; purely local, no AI
-4. Repeat boxes → knit mode → image import → stitch symbols
+3. ~~Fractal generator (Sierpinski, Rule 90)~~ — done
+4. **Repeat boxes → knit mode → image import → stitch symbols** ← next
 5. AI assistant, last: it needs a key-holding proxy before it does anything, and
-   step 3 delivers most of the generative value with none of that infrastructure
+   step 3 delivered most of the generative value with none of that infrastructure
 
 ## Running it
 
 ```bash
 npm install
 npm run dev          # browser at localhost:5173
-npm test             # vitest, 242 unit tests
+npm test             # vitest, 286 unit tests
 npx tauri dev        # desktop app with hot reload
 npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
 ```
@@ -39,11 +40,11 @@ First `tauri build` takes ~6 minutes; later builds are much faster.
 src/
   model/     types, RLE codec, .knitchart file <-> Chart, gauge math
   domain/    float checker, label conventions, region geometry, page tiling,
-             written instructions, yarn estimates, yarn presets
+             written instructions, yarn estimates, yarn presets, generators
   state/     Zustand store + undo/redo command stack
   editor/    Canvas render loop, tool geometry (line/rect/flood fill)
   components/ TopBar, Toolbar, PalettePanel, ChartSizePanel, WarningsPanel,
-              NewChartDialog, PdfDialog, PatternDialog
+              NewChartDialog, PdfDialog, PatternDialog, GenerateDialog
   io/        save/open, PNG + SVG export, print-ready PDF + pattern pages
 src-tauri/   Rust shell, NSIS bundle config, fs/dialog permissions
 ```
@@ -147,6 +148,42 @@ yarn travels the full circumference. Absent from a row, it is not carried at all
 The per-stitch figure is a rule of thumb (~3x stitch width) with a stated margin,
 so the UI calls it an estimate rather than a shopping list.
 
+**The pattern generators are one engine with named front doors.** A Sierpinski
+triangle *is* elementary rule 90 seeded with a single stitch and plain edges, so
+`domain/generators.ts` implements the automaton once and exposes "Sierpinski
+triangle" as a preset — knitters look for it by name, not by rule number. Every
+generator produces a binary grid at pattern-cell resolution, which is then blown
+up by the stitch/row scale, centre-cropped to the target, and mapped onto two
+palette indices. The same function feeds the dialog preview, the chart, and the
+tests, so what you see previewed is exactly what lands on the chart.
+
+Three knitting-specific decisions inside it:
+
+- **Wrap defaults to the chart's direction.** Knitting in the round makes a row
+  a cylinder, so the automaton should carry on across the join rather than
+  stopping dead at the edges. Flat knitting gets plain edges.
+- **"Match my gauge" scales rows, not stitches.** Stitches are wider than they
+  are tall, so a fractal charted one-cell-per-stitch knits up squashed;
+  `gaugeRowScale` returns `round(scaleX * rowsPer4in / stsPer4in)` — worsted
+  needs 5 rows per 4 stitches. The preview is drawn at gauge aspect too, so a
+  squashed motif looks squashed on screen rather than surprising you off the
+  needles.
+- **A burnt-out automaton re-seeds.** Rule 90 with plain edges dies to nothing
+  whenever the width is one less than a power of two — and 60 stitches at 4
+  stitches per cell gives exactly 15, so it is easy to hit by accident and
+  leaves half the chart bare. `restart` sows the seed again when a generation
+  comes out empty, turning it into a repeating motif; a checkbox turns it off.
+
+Generating emits a single `structure` command rather than up to 90,000 cell
+diffs, and `replaceGrid` restores the selection afterwards because the size
+hasn't changed — you may well want to mirror what you just generated. With a
+selection active the generator fills only that region, so a motif can be dropped
+into a panel without disturbing the rest of the chart.
+
+The Sierpinski carpet tiles *in phase*: `tileOffset` centres a whole number of
+motifs on the chart, so a 54-stitch chart gets two intact 27-stitch carpets
+rather than a repeat sliced at an arbitrary column.
+
 **Pan comes from a real scroll container, not a stored offset.** The canvases sit
 inside `.editor-scroll` as a `position: sticky` layer sized to the viewport,
 over a spacer sized to the zoomed chart — so the browser draws genuine
@@ -218,7 +255,7 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Testing
 
-- `npm test` — 242 unit tests. pdf-lib runs in Node, so the PDF export is tested
+- `npm test` — 286 unit tests. pdf-lib runs in Node, so the PDF export is tested
   directly: page counts against the built document, paper sizes, unencodable
   titles, and that the dialog's page estimate always matches what gets saved.
   The rest cover the pure functions: RLE encode/decode
@@ -226,8 +263,12 @@ agreement, and every cell referencing a palette entry that exists.
   wrap, thresholds, incremental vs full rescan), label conventions (row/stitch
   numbering, RS/WS, label thinning), yarn-weight presets, region geometry
   (resize per anchor, crop bounds, extract/place with clipping, overlapping
-  moves, mirroring), and the store's stroke coalescing, undo/redo, resize undo,
-  selection ops, and palette index remapping.
+  moves, mirroring), the pattern generators (rule-table decoding, rule 90 checked
+  against binomial coefficients mod 2, wrap vs plain edges, re-seeding, carpet
+  recursion and tiling phase, scaling, gauge row scale), and the store's stroke
+  coalescing, undo/redo, resize undo, selection ops, and palette index remapping.
+  The automaton tests inject the random source so a "random seed" run is
+  reproducible.
 - Browser smoke test (not in the repo — it lives in the session scratchpad):
   drives the real app with puppeteer-core against Edge, checking drag-paint,
   undo/redo via keyboard, flood fill, eyedropper, rectangle, the square-grid
@@ -243,8 +284,9 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Deliberately not built
 
-Image import, AI features, PDF export, stitch symbols, and knit-mode progress
-tracking were all scoped out of this pass. The data model has room for them.
+Repeat boxes, image import, stitch symbols, knit-mode progress tracking, and AI
+features are still out. The data model has room for them: `symbolLayer` and
+`repeats` are already in the file format.
 
 ## Gotchas
 

@@ -716,3 +716,49 @@ button.tab.on {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* --- pattern generator --- */
+
+.dialog-generate {
+  width: 700px;
+  /* the cellular-automaton form is the tallest; keep it usable on short screens */
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.generate-body {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 18px;
+  align-items: start;
+}
+
+.generate-controls {
+  min-width: 0;
+}
+
+/* the controls column changes height as you switch generators; pin the preview
+   so it doesn't slide out from under the pointer */
+.generate-preview {
+  position: sticky;
+  top: 0;
+}
+
+.generate-preview canvas {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  image-rendering: pixelated;
+}
+
+.generate-hint {
+  margin: -4px 0 10px;
+  font-style: italic;
+}
+
+.generate-reroll {
+  width: 100%;
+  margin-bottom: 10px;
+  font-size: 12px;
+}

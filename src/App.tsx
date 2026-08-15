@@ -8,6 +8,7 @@ import { NewChartDialog } from './components/NewChartDialog';
 import { ChartSizePanel } from './components/ChartSizePanel';
 import { PdfDialog } from './components/PdfDialog';
 import { PatternDialog } from './components/PatternDialog';
+import { GenerateDialog } from './components/GenerateDialog';
 import { useStore } from './state/store';
 import { openChart, saveChart } from './io/file';
 import './App.css';
@@ -16,6 +17,7 @@ export default function App() {
   const [showNew, setShowNew] = useState(false);
   const [showPdf, setShowPdf] = useState(false);
   const [showPattern, setShowPattern] = useState(false);
+  const [showGenerate, setShowGenerate] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -59,6 +61,10 @@ export default function App() {
             // print of the canvas would not.
             e.preventDefault();
             setShowPdf(true);
+            return;
+          case 'g':
+            e.preventDefault();
+            setShowGenerate(true);
             return;
           case 'c':
             if (s.selection) {
@@ -128,6 +134,7 @@ export default function App() {
         onNewChart={() => setShowNew(true)}
         onPrint={() => setShowPdf(true)}
         onPattern={() => setShowPattern(true)}
+        onGenerate={() => setShowGenerate(true)}
       />
       <div className="main">
         <Toolbar />
@@ -141,6 +148,7 @@ export default function App() {
       {showNew && <NewChartDialog onClose={() => setShowNew(false)} />}
       {showPdf && <PdfDialog onClose={() => setShowPdf(false)} />}
       {showPattern && <PatternDialog onClose={() => setShowPattern(false)} />}
+      {showGenerate && <GenerateDialog onClose={() => setShowGenerate(false)} />}
     </div>
   );
 }

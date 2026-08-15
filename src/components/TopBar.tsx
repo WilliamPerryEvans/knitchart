@@ -9,10 +9,12 @@ export function TopBar({
   onNewChart,
   onPrint,
   onPattern,
+  onGenerate,
 }: {
   onNewChart: () => void;
   onPrint: () => void;
   onPattern: () => void;
+  onGenerate: () => void;
 }) {
   const chart = useStore((s) => s.chart);
   const dirty = useStore((s) => s.dirty);
@@ -79,6 +81,9 @@ export function TopBar({
       </div>
 
       <div className="topbar-group">
+        <button onClick={onGenerate} title="Fill the chart with a fractal or a repeat (Ctrl+G)">
+          ✦ Generate
+        </button>
         <button onClick={() => useStore.getState().undo()} disabled={undoStack.length === 0}>
           ↩ Undo
         </button>
