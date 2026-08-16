@@ -89,6 +89,8 @@ interface EditorState {
    */
   chartEpoch: number;
   filePath: string | null;
+  /** Id of the browser-library chart this came from, if any. */
+  libraryId: string | null;
   dirty: boolean;
 
   tool: Tool;
@@ -120,8 +122,9 @@ interface EditorState {
     gauge: Gauge;
     direction: Direction;
   }) => void;
-  loadChart: (chart: Chart, filePath: string | null) => void;
+  loadChart: (chart: Chart, filePath: string | null, libraryId?: string | null) => void;
   setFilePath: (path: string | null) => void;
+  setLibraryId: (id: string | null) => void;
   markSaved: () => void;
   setTitle: (title: string) => void;
   setGauge: (gauge: Gauge) => void;
@@ -270,6 +273,7 @@ export const useStore = create<EditorState>((set, get) => ({
   dirtyCells: null,
   chartEpoch: 0,
   filePath: null,
+  libraryId: null,
   dirty: false,
 
   tool: 'pencil',
@@ -295,6 +299,7 @@ export const useStore = create<EditorState>((set, get) => ({
       dirtyCells: null,
       chartEpoch: get().chartEpoch + 1,
       filePath: null,
+      libraryId: null,
       dirty: false,
       floatWarnings: recompute(chart),
       undoStack: [],
@@ -305,13 +310,14 @@ export const useStore = create<EditorState>((set, get) => ({
     });
   },
 
-  loadChart: (chart, filePath) => {
+  loadChart: (chart, filePath, libraryId = null) => {
     set({
       chart,
       gridVersion: get().gridVersion + 1,
       dirtyCells: null,
       chartEpoch: get().chartEpoch + 1,
       filePath,
+      libraryId,
       dirty: false,
       floatWarnings: recompute(chart),
       undoStack: [],
@@ -323,6 +329,7 @@ export const useStore = create<EditorState>((set, get) => ({
   },
 
   setFilePath: (filePath) => set({ filePath }),
+  setLibraryId: (libraryId) => set({ libraryId }),
   markSaved: () => set({ dirty: false }),
   setTitle: (title) => set({ chart: { ...get().chart, title }, dirty: true }),
 

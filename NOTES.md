@@ -11,15 +11,15 @@ is deliberately deferred — see "Deliberately not built".
 
 ## Where to pick up
 
-**Current work: the phone and web version.** Phase 0 is done and deployed; the
-user is testing the live site on their phone before the layout work starts, so
-the next phase should wait on their feedback.
+**Current work: the phone and web version.** Phases 0–3 are done and deployed.
+The user is testing the live site on a phone with a pen; their feedback on palm
+rejection and the 1.5s lockout is the thing most likely to change next.
 
 0. ~~Prove the web build, deploy to GitHub Pages~~ — done, see "The web build"
 1. ~~Touch and pen input~~ — done, see "Touch and pen"
 2. ~~Phone layout~~ — done, see "The phone layout"
-3. **Chart library and autosave** ← next
-4. PWA manifest and service worker
+3. ~~Chart library and autosave~~ — done, see "Saved charts and autosave"
+4. **PWA manifest and service worker** ← next
 5. Hands-on pass on the real device
 
 Detail for each is below under "The phone and web plan". The decisions taken
@@ -46,7 +46,7 @@ paused while the phone work happens:
 ```bash
 npm install
 npm run dev          # browser at localhost:5173
-npm test             # vitest, 322 unit tests
+npm test             # vitest, 372 unit tests
 npx tauri dev        # desktop app with hot reload
 npm run install-app  # build, then update the installed desktop app
 npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
@@ -140,7 +140,47 @@ erasing.
 mid-flight (a system edge swipe, the app backgrounding), and without it the next
 touch resumes a stroke that visually ended long ago.
 
-Still to do: the chart library and autosave, and the PWA manifest.
+Still to do: the PWA manifest.
+
+## Saved charts and autosave
+
+`src/io/library.ts`. On a phone "Save" meant downloading a file into a Downloads
+folder, which nobody does twice; this is the other half of the story.
+
+**Entries hold the same validated `KnitChartFile` a `.knitchart` file holds**, so
+a chart moves between the library, a file and the desktop app with one format to
+keep in step, not two. `entryFor`/`toCards`/`chartFromEntry` are pure and unit
+tested; only the driver touches IndexedDB.
+
+**The driver is an interface with two implementations**, because vitest runs in
+Node with no `indexedDB` and a private-mode browser may not have one either.
+`libraryDriver()` picks IndexedDB when it exists and memory otherwise — the
+library then lasts one session instead of throwing, which is the right failure
+for a drawing app. `setLibraryDriver()` swaps it in tests.
+
+**The working slot (`WORKING_ID`) is an entry like any other, filtered out of
+listings.** `useAutosave()` (`src/state/autosave.ts`) restores it on load, then
+rewrites it on a 1.2s debounce after any grid or chart change. Two rules earned
+the hard way:
+
+- **Nothing may be written until the restore has finished** — otherwise the
+  blank startup chart overwrites the work being brought back. Hence the `ready`
+  gate.
+- **`visibilitychange` flushes immediately.** Android can kill a backgrounded tab
+  at once, which is exactly the case where waiting out a debounce loses the row.
+
+The slot carries `filePath` and `sourceId` so a restored chart still knows which
+file Ctrl+S overwrites and which saved chart "Save changes" updates.
+
+Thumbnails (`src/io/thumbnail.ts`) take the **most common palette index** in each
+block rather than averaging. Averaging invents colours that are in no palette — a
+navy-and-cream chart would thumbnail as muddy grey-blue, which tells a knitter
+nothing about the yarn they picked. `thumbnailPixels` is pure; `thumbnailDataUrl`
+wraps it in a canvas and returns `''` where there is none.
+
+Renaming writes the name to the card *and* into `file.meta.title`. Renaming only
+the card would mean the chart came back under its old name the moment it was
+exported.
 
 ## The phone and web plan
 
@@ -223,14 +263,16 @@ and the uninstaller.
 
 ```
 src/
-  model/     types, RLE codec, .knitchart file <-> Chart, gauge math
+  model/     types, RLE codec, .knitchart file <-> Chart, gauge math, hex colour
   domain/    float checker, label conventions, region geometry, page tiling,
              written instructions, yarn estimates, yarn presets, generators
-  state/     Zustand store + undo/redo command stack
-  editor/    Canvas render loop, tool geometry (line/rect/flood fill)
+  state/     Zustand store + undo/redo command stack, autosave hook
+  editor/    Canvas render loop, tool geometry (line/rect/flood fill), gestures
   components/ TopBar, Toolbar, PalettePanel, ChartSizePanel, WarningsPanel,
-              NewChartDialog, PdfDialog, PatternDialog, GenerateDialog
-  io/        save/open, PNG + SVG export, print-ready PDF + pattern pages
+              NewChartDialog, PdfDialog, PatternDialog, GenerateDialog,
+              LibraryDialog
+  io/        save/open, PNG + SVG export, print-ready PDF + pattern pages,
+             browser chart library (IndexedDB) + thumbnails
 src-tauri/   Rust shell, NSIS bundle config, fs/dialog permissions
 ```
 
@@ -518,7 +560,7 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Testing
 
-- `npm test` — 322 unit tests. pdf-lib runs in Node, so the PDF export is tested
+- `npm test` — 372 unit tests. pdf-lib runs in Node, so the PDF export is tested
   directly: page counts against the built document, paper sizes, unencodable
   titles, and that the dialog's page estimate always matches what gets saved.
   The rest cover the pure functions: RLE encode/decode
@@ -532,7 +574,14 @@ agreement, and every cell referencing a palette entry that exists.
   gasket measured against the gauge, scaling, gauge row scale), and the store's
   stroke coalescing, undo/redo, resize undo, selection ops, paste modes, rotation,
   dirty-cell accumulation, and palette index remapping. The automaton tests inject
-  the random source so a "random seed" run is reproducible.
+  the random source so a "random seed" run is reproducible. The library tests run
+  against `createMemoryDriver()`, which is why the IndexedDB code is a swappable
+  driver rather than inlined; thumbnails are tested as pixels, not as a canvas.
+- Persistence is checked in the browser instead, because "survives a reload" is
+  the whole point and cannot be faked in Node: `library.mjs` deletes the database,
+  saves two charts, reopens one and compares grid checksums, draws an *unsaved*
+  chart, reloads the page, and asserts it came back and is still absent from the
+  saved list. Then rename and delete.
 - Browser smoke test (not in the repo — it lives in the session scratchpad):
   drives the real app with puppeteer-core against Edge, checking drag-paint,
   undo/redo via keyboard, flood fill, eyedropper, rectangle, the square-grid

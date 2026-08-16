@@ -1142,3 +1142,181 @@ button.tab.on {
   margin-bottom: 10px;
   font-size: 12px;
 }
+
+/* --- saved charts (browser library) --- */
+
+.dialog-library {
+  width: 680px;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+/* What you have open now, and what saving would do to it. Kept at the top
+   because "save this" is why most people open this screen. */
+.library-save {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.library-save-what {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.library-save-what strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-save-what span {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.library-save-buttons {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.library-grid {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+}
+
+.library-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--panel-2);
+  min-width: 0;
+}
+
+/* the chart you already have open */
+.library-card.open {
+  border-color: var(--accent);
+}
+
+.library-open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 104px;
+  padding: 4px;
+  margin-bottom: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.library-open img {
+  max-width: 100%;
+  max-height: 100%;
+  /* a thumbnail is one pixel per few stitches; smoothing turns it to mush */
+  image-rendering: pixelated;
+  border-radius: 2px;
+}
+
+.library-nothumb {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.library-title {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-rename {
+  width: 100%;
+  font-size: 13px;
+}
+
+.library-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.library-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.library-actions button {
+  flex: 1;
+  font-size: 11px;
+  padding: 3px 4px;
+}
+
+/* --- "we brought your chart back" bar --- */
+
+.restore-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: #24384d;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.restore-note button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.restore-dismiss {
+  margin-left: auto;
+}
+
+@media (max-width: 720px) {
+  .dialog-library {
+    width: 100%;
+  }
+
+  .library-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+
+  .library-open {
+    height: 84px;
+  }
+
+  .library-save {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .library-save-buttons button {
+    flex: 1;
+    min-height: 40px;
+  }
+
+  .library-actions button {
+    min-height: 34px;
+  }
+}

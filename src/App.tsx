@@ -9,7 +9,9 @@ import { ChartSizePanel } from './components/ChartSizePanel';
 import { PdfDialog } from './components/PdfDialog';
 import { PatternDialog } from './components/PatternDialog';
 import { GenerateDialog } from './components/GenerateDialog';
+import { LibraryDialog } from './components/LibraryDialog';
 import { useStore } from './state/store';
+import { useAutosave } from './state/autosave';
 import { openChart, saveChart } from './io/file';
 import './App.css';
 
@@ -18,6 +20,8 @@ export default function App() {
   const [showPdf, setShowPdf] = useState(false);
   const [showPattern, setShowPattern] = useState(false);
   const [showGenerate, setShowGenerate] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const { restored, dismissRestored } = useAutosave();
   // Phone-only view state. On a desktop the CSS ignores both, so the layout is
   // exactly what it has always been.
   const [menuOpen, setMenuOpen] = useState(false);
@@ -139,9 +143,19 @@ export default function App() {
         onPrint={() => setShowPdf(true)}
         onPattern={() => setShowPattern(true)}
         onGenerate={() => setShowGenerate(true)}
+        onLibrary={() => setShowLibrary(true)}
         menuOpen={menuOpen}
         setMenuOpen={setMenuOpen}
       />
+      {restored && (
+        <div className="restore-note" role="status">
+          <span>Picked up where you left off.</span>
+          <button onClick={() => setShowLibrary(true)}>Save it to my charts</button>
+          <button className="restore-dismiss" aria-label="Dismiss" onClick={dismissRestored}>
+            ✕
+          </button>
+        </div>
+      )}
       <div className="main">
         <Toolbar />
         <CanvasEditor />
@@ -166,6 +180,7 @@ export default function App() {
       {showPdf && <PdfDialog onClose={() => setShowPdf(false)} />}
       {showPattern && <PatternDialog onClose={() => setShowPattern(false)} />}
       {showGenerate && <GenerateDialog onClose={() => setShowGenerate(false)} />}
+      {showLibrary && <LibraryDialog onClose={() => setShowLibrary(false)} />}
     </div>
   );
 }

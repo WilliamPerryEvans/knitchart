@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useStore } from '../state/store';
 import { cellAspect } from '../model/gauge';
+import { hexToRgb } from '../model/color';
 import { warningSegments } from '../domain/floats';
 import {
   rowArrow,
@@ -89,12 +90,6 @@ interface DragState {
 
 /** Radius of the rotate grip, in css px. */
 const ROTATE_HANDLE_R = 9;
-
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace('#', '');
-  const v = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h, 16);
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-}
 
 export function CanvasEditor() {
   const containerRef = useRef<HTMLDivElement>(null);

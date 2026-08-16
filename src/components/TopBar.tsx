@@ -10,6 +10,7 @@ export function TopBar({
   onPrint,
   onPattern,
   onGenerate,
+  onLibrary,
   menuOpen,
   setMenuOpen,
 }: {
@@ -17,6 +18,7 @@ export function TopBar({
   onPrint: () => void;
   onPattern: () => void;
   onGenerate: () => void;
+  onLibrary: () => void;
   /** Phone only: whether the file/settings menu is expanded. */
   menuOpen: boolean;
   setMenuOpen: (update: (open: boolean) => boolean) => void;
@@ -97,6 +99,9 @@ export function TopBar({
       <div className="topbar-rest">
       <div className="topbar-group topbar-files">
         <button onClick={onNewChart}>New</button>
+        <button onClick={onLibrary} title="Charts saved in this browser — no file to find">
+          My charts
+        </button>
         <button onClick={doOpen}>Open</button>
         <button onClick={() => doSave(false)}>Save{dirty ? ' •' : ''}</button>
         <button onClick={() => doSave(true)}>Save As</button>
