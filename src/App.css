@@ -774,7 +774,8 @@ button.tab.on {
    the wrapper vanishes and the bar lays out exactly as it always has. */
 
 .topbar-menu-btn,
-.sheet-handle {
+.sheet-handle,
+.hint-touch {
   display: none;
 }
 
@@ -848,6 +849,14 @@ button.tab.on {
   /* Undo/Redo keep their arrows but drop the words, which do not fit. */
   .btn-label {
     display: none;
+  }
+
+  .hint-pointer {
+    display: none;
+  }
+
+  .hint-touch {
+    display: inline;
   }
 
   .topbar-menu-btn {
@@ -1071,9 +1080,13 @@ button.tab.on {
     height: auto !important;
   }
 
-  /* Talks about the wheel and scrollbars, neither of which a phone has. */
+  /* Keep the hint, but swap the mouse instructions for the gesture — pinch is
+     the one thing on this screen with nothing on-screen to advertise it. */
   .editor-hint {
-    display: none;
+    left: 6px;
+    right: 6px;
+    bottom: 4px;
+    font-size: 10px;
   }
 
   .selection-bar {

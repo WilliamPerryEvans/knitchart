@@ -16,9 +16,9 @@ user is testing the live site on their phone before the layout work starts, so
 the next phase should wait on their feedback.
 
 0. ~~Prove the web build, deploy to GitHub Pages~~ — done, see "The web build"
-1. **Touch and pen input** ← next
-2. Phone layout
-3. Chart library and autosave
+1. ~~Touch and pen input~~ — done, see "Touch and pen"
+2. ~~Phone layout~~ — done, see "The phone layout"
+3. **Chart library and autosave** ← next
 4. PWA manifest and service worker
 5. Hands-on pass on the real device
 
@@ -107,8 +107,40 @@ Three things were not obvious:
   browser check now audits every control for a 30 px minimum and the panels were
   full of 14–25 px targets.
 
-Still to do: touch and pen input (Phase 1 — pinch-zoom, two-finger pan, palm
-rejection), the chart library and autosave, and the PWA manifest.
+## Touch and pen
+
+`src/editor/gestures.ts` holds the arithmetic, pure and unit tested; the canvas
+passes numbers in and applies what comes back.
+
+**Palm rejection is the rule that makes a pen usable.** Once a
+`pointerType === 'pen'` event has been seen, touches stop marking the chart for
+`PEN_LOCKOUT_MS` (1.5s, refreshed by every pen event). Without it the hand
+resting on the glass paints stitches under the heel of the palm. Deliberate
+two-finger gestures stay live throughout — only *drawing* is suppressed.
+
+**Two contacts mean "move the chart", not "draw".** By the time the second
+finger lands the first has already painted a short line, so the store grew
+`cancelStroke()`: it puts the stitches back and records nothing on the undo
+stack. Without it every pinch left a stray mark at its start.
+
+**Pinch is measured against the previous frame, not the gesture start**, so
+zooming and dragging compose without accumulating drift. Both it and the wheel
+go through one `zoomAround(nextZoom, from, to)` — `from` is where the anchor is
+now, `to` where it should end up (the same point for a wheel, two different ones
+for a pinch that also drags). Pan is derived from the scroll container, so
+zooming means re-deriving the scroll offset; having two copies of that would
+guarantee they drift.
+
+**The pen's barrel button and flipped eraser end paint the background.**
+Styluses report them as `button` 2 and 5; a mouse right-click is deliberately
+not an eraser. The colour is stored on the drag so the whole stroke keeps
+erasing.
+
+`onPointerCancel` matters on a phone: the browser can take a gesture away
+mid-flight (a system edge swipe, the app backgrounding), and without it the next
+touch resumes a stroke that visually ended long ago.
+
+Still to do: the chart library and autosave, and the PWA manifest.
 
 ## The phone and web plan
 

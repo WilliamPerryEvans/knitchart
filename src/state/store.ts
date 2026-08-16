@@ -160,6 +160,13 @@ interface EditorState {
   paintCell: (i: number, color: number) => void;
   paintCells: (cells: Array<{ i: number; color: number }>) => void;
   endStroke: (label: string) => void;
+  /**
+   * Abandon the stroke in progress, putting every stitch back as it was and
+   * recording nothing on the undo stack. Used when a second finger lands: the
+   * first one has already drawn a short line by then, and that line was the
+   * start of a pinch, not a mark the knitter wanted.
+   */
+  cancelStroke: () => void;
 
   /** One-shot grid command (fill, color swap): applies + pushes one undo step. */
   applyCells: (label: string, cells: Array<{ i: number; color: number }>) => void;
@@ -515,6 +522,24 @@ export const useStore = create<EditorState>((set, get) => ({
         floatWarnings,
         diffs.map((d) => d.i)
       ),
+    });
+  },
+
+  cancelStroke: () => {
+    const { pendingStroke, chart, floatWarnings } = get();
+    if (!pendingStroke) return;
+    const diffs = [...pendingStroke.values()];
+    if (diffs.length === 0) {
+      set({ pendingStroke: null });
+      return;
+    }
+    for (const d of diffs) chart.grid[d.i] = d.before;
+    const touched = diffs.map((d) => d.i);
+    set({
+      pendingStroke: null,
+      gridVersion: get().gridVersion + 1,
+      dirtyCells: addDirty(get().dirtyCells, touched),
+      floatWarnings: recomputeTouched(chart, floatWarnings, touched),
     });
   },
 

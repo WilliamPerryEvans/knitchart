@@ -16,6 +16,17 @@ import {
 } from '../domain/labels';
 import { floodFill, lineCells, rectCells, type Cell } from './tools';
 import {
+  cellUnderPoint,
+  clamp,
+  isEraserButton,
+  isGesture,
+  isPalmTouch,
+  midpoint,
+  panForCell,
+  pinchScale,
+  type Point,
+} from './gestures';
+import {
   mirrorCellIndices,
   regionContains,
   regionFromCorners,
@@ -62,12 +73,14 @@ function guttersFor(viewportW: number) {
 }
 
 interface DragState {
-  mode: 'paint' | 'shape' | 'pan' | 'marquee' | 'moveSelection' | 'rotateSelection';
+  mode: 'paint' | 'shape' | 'pan' | 'marquee' | 'moveSelection' | 'rotateSelection' | 'pinch';
   start: Cell;
   last: Cell;
   panStart: { x: number; y: number; scrollLeft: number; scrollTop: number } | null;
   /** Where the selection sat when a move-drag began. */
   origin?: { row: number; col: number };
+  /** Colour this stroke lays down — the eraser end paints the background. */
+  color?: number;
   /** Pointer angle about the selection centre when a rotate-drag began. */
   startAngle?: number;
   /** Quarter turns the rotate-drag has reached so far. */
@@ -100,6 +113,12 @@ export function CanvasEditor() {
   const dragRef = useRef<DragState | null>(null);
   const hoverRef = useRef<Cell | null>(null);
   const spaceRef = useRef(false);
+  /** Live contacts, so two fingers can be told apart from one. */
+  const pointersRef = useRef(new Map<number, { x: number; y: number; type: string }>());
+  /** When the pen was last seen, for palm rejection. */
+  const lastPenRef = useRef<number | null>(null);
+  /** The two contacts as of the last pinch frame; compared incrementally. */
+  const pinchRef = useRef<{ last: [Point, Point] } | null>(null);
   const rafRef = useRef(0);
   const fittedForRef = useRef('');
 
@@ -736,11 +755,84 @@ export function CanvasEditor() {
     [indicesFor]
   );
 
+  /**
+   * Change the zoom while keeping a chart position pinned to a screen point.
+   *
+   * `from` is where the anchor is now, `to` where it should end up — the same
+   * point for a wheel zoom, two different points for a pinch that also drags.
+   * Shared by both so they cannot drift: pan is derived from the scroll
+   * container, so zooming means re-deriving the scroll offset for the new zoom.
+   */
+  const zoomAround = useCallback(
+    (nextZoom: number, from: Point, to: Point) => {
+      const sc = scrollRef.current;
+      if (!sc) return;
+      const size = { w: cellW, h: cellH };
+      const v = viewRef.current;
+      const before = getPan();
+      const held = cellUnderPoint(from, { x: before.panX, y: before.panY }, size, v.zoom);
+
+      v.zoom = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+      syncGeometry();
+
+      const after = getPan();
+      const want = panForCell(held, to, size, v.zoom);
+      const maxLeft = Math.max(0, sc.scrollWidth - sc.clientWidth);
+      const maxTop = Math.max(0, sc.scrollHeight - sc.clientHeight);
+      // Content smaller than the viewport is centred, so scrolling does nothing.
+      if (after.contentW > viewportRef.current.w) {
+        sc.scrollLeft = clamp(after.gut.left - want.x, 0, maxLeft);
+      }
+      if (after.contentH > viewportRef.current.h) {
+        sc.scrollTop = clamp(after.gut.top - want.y, 0, maxTop);
+      }
+      invalidate();
+    },
+    [getPan, syncGeometry, cellW, cellH, invalidate]
+  );
+
+  /** Contacts in canvas coordinates, oldest first. */
+  const contactPoints = useCallback((): Point[] => {
+    const el = overlayRef.current;
+    if (!el) return [];
+    const rect = el.getBoundingClientRect();
+    return [...pointersRef.current.values()].map((pt) => ({
+      x: pt.x - rect.left,
+      y: pt.y - rect.top,
+    }));
+  }, []);
+
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       const el = e.currentTarget;
       el.setPointerCapture(e.pointerId);
       const s = useStore.getState();
+      const now = performance.now();
+      if (e.pointerType === 'pen') lastPenRef.current = now;
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+
+      // A second contact means "move the chart", not "draw". The first finger
+      // has already painted a short line by now, so throw it away rather than
+      // leaving a stray mark at the start of every pinch.
+      if (isGesture(pointersRef.current.size)) {
+        if (dragRef.current?.mode === 'paint') s.cancelStroke();
+        const pts = contactPoints();
+        if (pts.length >= 2) {
+          dragRef.current = {
+            mode: 'pinch',
+            start: { row: 0, col: 0 },
+            last: { row: 0, col: 0 },
+            panStart: null,
+          };
+          pinchRef.current = { last: [pts[0], pts[1]] };
+        }
+        hoverRef.current = null;
+        invalidate();
+        return;
+      }
+
+      // The hand resting on the glass while the pen is in play.
+      if (isPalmTouch(e.pointerType, lastPenRef.current, now)) return;
 
       if (spaceRef.current || e.button === 1) {
         dragRef.current = {
@@ -757,7 +849,10 @@ export function CanvasEditor() {
         el.style.cursor = 'grabbing';
         return;
       }
-      if (e.button !== 0) return;
+      // The pen's barrel button and flipped-over eraser end rub stitches back to
+      // the background; a mouse right-click still does nothing.
+      const erasing = isEraserButton(e.pointerType, e.button);
+      if (e.button !== 0 && !erasing) return;
 
       // The rotate grip sits outside the selection, and often outside the grid
       // entirely, so it has to be tested before both the move branch and the
@@ -793,9 +888,10 @@ export function CanvasEditor() {
 
       switch (s.tool) {
         case 'pencil': {
+          const color = erasing ? 0 : s.activeColor;
           s.beginStroke();
-          s.paintCells(indicesFor([cell]).map((idx) => ({ i: idx, color: s.activeColor })));
-          dragRef.current = { mode: 'paint', start: cell, last: cell, panStart: null };
+          s.paintCells(indicesFor([cell]).map((idx) => ({ i: idx, color })));
+          dragRef.current = { mode: 'paint', start: cell, last: cell, panStart: null, color };
           break;
         }
         case 'fill': {
@@ -836,12 +932,38 @@ export function CanvasEditor() {
         }
       }
     },
-    [cellAt, invalidate, indicesFor, rotateHandle, localPoint]
+    [cellAt, invalidate, indicesFor, rotateHandle, localPoint, contactPoints]
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      const tracked = pointersRef.current.get(e.pointerId);
+      if (tracked) {
+        tracked.x = e.clientX;
+        tracked.y = e.clientY;
+      }
       const drag = dragRef.current;
+
+      // Pinch: measured against the previous frame rather than the gesture
+      // start, so zooming and dragging compose without accumulating drift.
+      if (drag?.mode === 'pinch') {
+        const pts = contactPoints();
+        const prev = pinchRef.current;
+        if (pts.length >= 2 && prev) {
+          const now: [Point, Point] = [pts[0], pts[1]];
+          zoomAround(
+            viewRef.current.zoom * pinchScale(prev.last, now),
+            midpoint(prev.last[0], prev.last[1]),
+            midpoint(now[0], now[1])
+          );
+          prev.last = now;
+        }
+        return;
+      }
+
+      // A palm dragging across the glass must not smear paint either.
+      if (isPalmTouch(e.pointerType, lastPenRef.current, performance.now())) return;
+
       if (drag?.mode === 'pan' && drag.panStart) {
         const sc = scrollRef.current;
         if (sc) {
@@ -872,7 +994,7 @@ export function CanvasEditor() {
           // fill the gap since the last event so fast drags don't leave holes
           const cells = indicesFor(lineCells(drag.last, cell)).map((i) => ({
             i,
-            color: s.activeColor,
+            color: drag.color ?? s.activeColor,
           }));
           s.paintCells(cells);
           drag.last = cell;
@@ -884,12 +1006,28 @@ export function CanvasEditor() {
       }
       invalidate();
     },
-    [cellAt, invalidate, indicesFor, rotateHandle, localPoint]
+    [cellAt, invalidate, indicesFor, rotateHandle, localPoint, contactPoints, zoomAround]
   );
 
   const onPointerUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      pointersRef.current.delete(e.pointerId);
       const drag = dragRef.current;
+
+      // Stay in the gesture until the second finger lifts, then re-seed from
+      // whatever is left so a third contact doesn't jump the chart.
+      if (drag?.mode === 'pinch') {
+        const pts = contactPoints();
+        if (pts.length >= 2) {
+          pinchRef.current = { last: [pts[0], pts[1]] };
+        } else {
+          dragRef.current = null;
+          pinchRef.current = null;
+        }
+        invalidate();
+        return;
+      }
+
       dragRef.current = null;
       const s = useStore.getState();
       if (!drag) return;
@@ -912,7 +1050,7 @@ export function CanvasEditor() {
       }
       invalidate();
     },
-    [applyShape, invalidate]
+    [applyShape, invalidate, contactPoints]
   );
 
   /**
@@ -932,35 +1070,29 @@ export function CanvasEditor() {
         return;
       }
 
+      // Same path a pinch takes: hold the stitch under the cursor still.
       const rect = el.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const v = viewRef.current;
-      const before = getPan();
-      // which cell (fractional) sits under the cursor right now
-      const cellX = (x - before.panX) / (cellW * v.zoom);
-      const cellY = (y - before.panY) / (cellH * v.zoom);
-
-      const factor = Math.pow(1.0015, -e.deltaY);
-      v.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.zoom * factor));
-      syncGeometry();
-
-      // put that same cell back under the cursor
-      const after = getPan();
-      const wantPanX = x - cellX * cellW * v.zoom;
-      const wantPanY = y - cellY * cellH * v.zoom;
-      const maxLeft = Math.max(0, sc.scrollWidth - sc.clientWidth);
-      const maxTop = Math.max(0, sc.scrollHeight - sc.clientHeight);
-      if (after.contentW > viewportRef.current.w) {
-        sc.scrollLeft = Math.max(0, Math.min(maxLeft, after.gut.left - wantPanX));
-      }
-      if (after.contentH > viewportRef.current.h) {
-        sc.scrollTop = Math.max(0, Math.min(maxTop, after.gut.top - wantPanY));
-      }
-      invalidate();
+      const focus = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      zoomAround(viewRef.current.zoom * Math.pow(1.0015, -e.deltaY), focus, focus);
     },
-    [invalidate, getPan, syncGeometry, cellW, cellH]
+    [invalidate, zoomAround]
   );
+
+  /**
+   * The browser can take a gesture away mid-flight (a system edge swipe, the
+   * app backgrounding). Drop the contact and abandon anything in progress, or
+   * the next touch resumes a stroke that visually ended long ago.
+   */
+  const onPointerCancel = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    pointersRef.current.delete(e.pointerId);
+    if (dragRef.current?.mode === 'paint') useStore.getState().cancelStroke();
+    if (pointersRef.current.size < 2) {
+      dragRef.current = null;
+      pinchRef.current = null;
+    }
+    hoverRef.current = null;
+    invalidate();
+  }, [invalidate]);
 
   return (
     <div ref={containerRef} className="editor-container">
@@ -980,6 +1112,7 @@ export function CanvasEditor() {
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
+              onPointerCancel={onPointerCancel}
               onPointerLeave={() => {
                 hoverRef.current = null;
                 invalidate();
@@ -1070,7 +1203,8 @@ export function CanvasEditor() {
           (selection
             ? 'Drag inside to move · drag the ↻ grip to turn it · Esc or click off the chart to deselect'
             : 'Drag to select stitches')}
-        {' · wheel zoom · shift+wheel or scrollbars to pan'}
+        <span className="hint-pointer"> · wheel zoom · shift+wheel or scrollbars to pan</span>
+        <span className="hint-touch"> · two fingers to zoom and pan</span>
       </div>
     </div>
   );
