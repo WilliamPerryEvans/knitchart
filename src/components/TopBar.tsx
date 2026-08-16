@@ -10,11 +10,16 @@ export function TopBar({
   onPrint,
   onPattern,
   onGenerate,
+  menuOpen,
+  setMenuOpen,
 }: {
   onNewChart: () => void;
   onPrint: () => void;
   onPattern: () => void;
   onGenerate: () => void;
+  /** Phone only: whether the file/settings menu is expanded. */
+  menuOpen: boolean;
+  setMenuOpen: (update: (open: boolean) => boolean) => void;
 }) {
   const chart = useStore((s) => s.chart);
   const dirty = useStore((s) => s.dirty);
@@ -60,8 +65,37 @@ export function TopBar({
   const size = finishedSize(chart.gauge, chart.stitches, chart.rows);
 
   return (
-    <div className="topbar">
-      <div className="topbar-group">
+    // `menu-open` only means anything on a phone, where .topbar-rest collapses.
+    // On a desktop .topbar-rest is `display: contents`, so the markup below lays
+    // out exactly as it always has.
+    <div className={menuOpen ? 'topbar menu-open' : 'topbar'}>
+      <input
+        className="title-input"
+        value={chart.title}
+        onChange={(e) => useStore.getState().setTitle(e.target.value)}
+        placeholder="Chart title"
+      />
+
+      <div className="topbar-group topbar-actions">
+        <button onClick={() => useStore.getState().undo()} disabled={undoStack.length === 0}>
+          ↩<span className="btn-label"> Undo</span>
+        </button>
+        <button onClick={() => useStore.getState().redo()} disabled={redoStack.length === 0}>
+          ↪<span className="btn-label"> Redo</span>
+        </button>
+      </div>
+
+      <button
+        className="topbar-menu-btn"
+        aria-expanded={menuOpen}
+        title={menuOpen ? 'Hide the menu' : 'Files, export and chart settings'}
+        onClick={() => setMenuOpen((o) => !o)}
+      >
+        {menuOpen ? '✕' : '⋯'}
+      </button>
+
+      <div className="topbar-rest">
+      <div className="topbar-group topbar-files">
         <button onClick={onNewChart}>New</button>
         <button onClick={doOpen}>Open</button>
         <button onClick={() => doSave(false)}>Save{dirty ? ' •' : ''}</button>
@@ -80,26 +114,13 @@ export function TopBar({
         </button>
       </div>
 
-      <div className="topbar-group">
+      <div className="topbar-group topbar-generate">
         <button onClick={onGenerate} title="Fill the chart with a fractal or a repeat (Ctrl+G)">
           ✦ Generate
         </button>
-        <button onClick={() => useStore.getState().undo()} disabled={undoStack.length === 0}>
-          ↩ Undo
-        </button>
-        <button onClick={() => useStore.getState().redo()} disabled={redoStack.length === 0}>
-          ↪ Redo
-        </button>
       </div>
 
-      <input
-        className="title-input"
-        value={chart.title}
-        onChange={(e) => useStore.getState().setTitle(e.target.value)}
-        placeholder="Chart title"
-      />
-
-      <div className="topbar-group">
+      <div className="topbar-group topbar-settings">
         <label>
           Yarn
           <select
@@ -174,6 +195,7 @@ export function TopBar({
         {chart.stitches} × {chart.rows} · {size.width.toFixed(1)} × {size.height.toFixed(1)}{' '}
         {size.unit}
         {filePath ? ` · ${filePath.split(/[\\/]/).pop()}` : ''}
+      </div>
       </div>
     </div>
   );

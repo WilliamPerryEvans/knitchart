@@ -73,10 +73,42 @@ filesystem and breaks if asset URLs are prefixed. The workflow sets the variable
 nothing else does. A mistake here breaks the desktop app silently, so check
 `dist/index.html` for a bare `/assets/…` after touching `vite.config.ts`.
 
-Not yet done: the phone layout, touch and pen input, a chart library to replace
-file downloads, and the PWA manifest. On a 412 px screen today the chart gets
-123 px between the toolbar and the sidebar — the desktop layout is intact but
-unusable on a phone.
+## The phone layout
+
+One breakpoint, `max-width: 720px`. Above it nothing changes: the two view
+states (`topbar.menu-open`, `sidebar.open`) exist on every screen but only mean
+something below the breakpoint, because `.topbar-rest` is `display: contents` on
+a desktop and so vanishes from layout entirely. **`display: contents` promotes
+the wrapped groups back to flex items of `.topbar`, which reorders them**, so
+explicit `order` values restore the desktop bar to files → generate → undo/redo
+→ title → settings. Changing the markup without them silently reshuffles the
+desktop toolbar.
+
+The phone shell is: an app bar with the title, undo/redo and a `⋯` that expands
+the bar in place to hold files, exports and gauge settings; the chart; a
+collapsed bottom sheet for the palette/size/float panels; and the tool dock
+within thumb reach. **The chart went from 123 px wide to 412 × 767, 84% of the
+screen.**
+
+Three things were not obvious:
+
+- **The gutters cost more than the labels were worth.** The desktop spends 140 px
+  on an RS/WS column plus row numbers that alternate sides — a third of a 412 px
+  phone. `guttersFor()` drops to 8/42 px below 560 px, loses the RS/WS column,
+  and stacks every row number on the right, tinting it with the RS/WS colours so
+  the side is still readable.
+- **Row numbers vanished entirely on a phone.** They were gated on `ch >= 7`, and
+  a 40-row chart fitted to a phone lands at 6.95 px per row. The stitch axis had
+  solved this years earlier with `stitchLabelStep`; the row axis never got the
+  equivalent. `rowLabelStep`/`showRowLabel`/`rowLabelsFit` in `domain/labels.ts`
+  now thin row numbers to every 5th or 10th the same way, keeping row 1.
+- **Reveal-on-hover hides controls completely on a touch screen.** The palette's
+  ▲▼✕ buttons are `opacity: 0` until hover, so on a phone they did not exist. A
+  browser check now audits every control for a 30 px minimum and the panels were
+  full of 14–25 px targets.
+
+Still to do: touch and pen input (Phase 1 — pinch-zoom, two-finger pan, palm
+rejection), the chart library and autosave, and the PWA manifest.
 
 ## The phone and web plan
 

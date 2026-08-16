@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   rowArrow,
+  rowLabelStep,
   rowLabels,
+  rowLabelsFit,
   rowNumber,
   rowNumberOnRight,
   rowSide,
+  showRowLabel,
   showStitchLabel,
   stitchLabelStep,
   stitchNumber,
@@ -57,6 +60,35 @@ describe('rowArrow', () => {
     expect(rowArrow('flat', 1)).toBe('←');
     expect(rowArrow('flat', 2)).toBe('→');
     expect(rowArrow('round', 2)).toBe('←');
+  });
+});
+
+describe('rowLabelStep', () => {
+  it('labels every row when they are tall enough', () => {
+    expect(rowLabelStep(14, 9)).toBe(1);
+  });
+
+  it('thins to every 5th when a label is taller than a row', () => {
+    // 6.95px rows at a 9px font is exactly where a 40-row chart lands when
+    // fitted to a 412px phone — and where the labels used to vanish entirely.
+    expect(rowLabelStep(6.95, 9)).toBe(5);
+  });
+
+  it('thins to every 10th when even every 5th would collide', () => {
+    expect(rowLabelStep(1.5, 9)).toBe(10);
+  });
+
+  it('always keeps row 1, the row you cast on', () => {
+    expect(showRowLabel(1, 10)).toBe(true);
+    expect(showRowLabel(5, 5)).toBe(true);
+    expect(showRowLabel(7, 5)).toBe(false);
+    expect(showRowLabel(7, 1)).toBe(true);
+  });
+
+  it('gives up only when thinned labels would still overlap', () => {
+    expect(rowLabelsFit(6.95, 9)).toBe(true); // every 5th, ~35px apart
+    expect(rowLabelsFit(14, 9)).toBe(true);
+    expect(rowLabelsFit(1, 9)).toBe(false); // every 10th is still only 10px
   });
 });
 

@@ -3,8 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>knitchart</title>
+    <!-- viewport-fit=cover lets the layout reach under the notch and gesture
+         bar; the CSS pads back with env(safe-area-inset-*). maximum-scale stops
+         Android zooming the whole page when a stitch is tapped twice, which
+         fought with the chart's own zoom. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#1f2228" />
+    <title>KnitChart</title>
   </head>
   <body>
     <div id="root"></div>

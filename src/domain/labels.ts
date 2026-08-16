@@ -61,6 +61,32 @@ export function showStitchLabel(num: number, step: number): boolean {
   return step === 1 || num === 1 || num % step === 0;
 }
 
+/**
+ * The same thinning for the row gutter: label every row when the cells are tall
+ * enough, otherwise every 5th or 10th. `lineHeight` is the font size the label
+ * is drawn at.
+ *
+ * Without this the row numbers simply disappear below a cell height of about
+ * seven pixels — which is exactly where a 40-row chart lands when it is fitted
+ * to a phone screen, so the chart arrived with no row numbers at all.
+ */
+export function rowLabelStep(cellHeight: number, lineHeight: number): number {
+  const needed = lineHeight + 2;
+  if (cellHeight >= needed) return 1;
+  if (cellHeight * 5 >= needed) return 5;
+  return 10;
+}
+
+/** Should this row number be drawn at the given step? Row 1 always is. */
+export function showRowLabel(num: number, step: number): boolean {
+  return step === 1 || num === 1 || num % step === 0;
+}
+
+/** Are thinned row labels still far enough apart to read? */
+export function rowLabelsFit(cellHeight: number, lineHeight: number): boolean {
+  return cellHeight * rowLabelStep(cellHeight, lineHeight) >= lineHeight + 2;
+}
+
 /** Row/side labels for every row of a chart, top to bottom. Handy for tests. */
 export function rowLabels(chart: Chart): Array<{ num: number; side: Side; right: boolean }> {
   const out = [];

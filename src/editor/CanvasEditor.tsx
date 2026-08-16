@@ -4,9 +4,12 @@ import { cellAspect } from '../model/gauge';
 import { warningSegments } from '../domain/floats';
 import {
   rowArrow,
+  rowLabelStep,
+  rowLabelsFit,
   rowNumber,
   rowNumberOnRight,
   rowSide,
+  showRowLabel,
   showStitchLabel,
   stitchLabelStep,
   stitchNumber,
@@ -38,6 +41,25 @@ const MARGIN_L = 84; // RS/WS column + row numbers
 const MARGIN_R = 56; // row numbers on the RS side
 const MARGIN_T = 16;
 const MARGIN_B = 30; // stitch numbers
+
+/** Below this the desktop gutters cost more than the labels are worth. */
+const COMPACT_WIDTH = 560;
+
+/**
+ * Gutter widths for the available viewport.
+ *
+ * The desktop layout spends 140px on labels — an RS/WS column, and row numbers
+ * that alternate sides. On a 412px phone that is a third of the screen, and the
+ * chart was being fitted into what little was left. Narrow screens drop the
+ * RS/WS column and put every row number on the right, where stitch 1 and the
+ * right-hand rows already are.
+ */
+function guttersFor(viewportW: number) {
+  const compact = viewportW > 0 && viewportW < COMPACT_WIDTH;
+  return compact
+    ? { left: 8, right: 42, top: 8, bottom: 22, compact }
+    : { left: MARGIN_L, right: MARGIN_R, top: MARGIN_T, bottom: MARGIN_B, compact };
+}
 
 interface DragState {
   mode: 'paint' | 'shape' | 'pan' | 'marquee' | 'moveSelection' | 'rotateSelection';
@@ -108,17 +130,19 @@ export function CanvasEditor() {
     const zoom = viewRef.current.zoom;
     const gw = c.stitches * cellW * zoom;
     const gh = c.rows * cellH * zoom;
-    const contentW = gw + MARGIN_L + MARGIN_R;
-    const contentH = gh + MARGIN_T + MARGIN_B;
+    const gut = guttersFor(vw);
+    const contentW = gw + gut.left + gut.right;
+    const contentH = gh + gut.top + gut.bottom;
     const scrollLeft = sc?.scrollLeft ?? 0;
     const scrollTop = sc?.scrollTop ?? 0;
     return {
-      panX: contentW <= vw ? (vw - gw) / 2 : MARGIN_L - scrollLeft,
-      panY: contentH <= vh ? (vh - gh) / 2 : MARGIN_T - scrollTop,
+      panX: contentW <= vw ? (vw - gw) / 2 : gut.left - scrollLeft,
+      panY: contentH <= vh ? (vh - gh) / 2 : gut.top - scrollTop,
       gw,
       gh,
       contentW,
       contentH,
+      gut,
     };
   }, [cellW, cellH]);
 
@@ -254,7 +278,15 @@ export function CanvasEditor() {
    * instead of re-stroking every line and re-laying out every label.
    */
   const drawChrome = useCallback(
-    (w: number, h: number, cw: number, ch: number, panX: number, panY: number) => {
+    (
+      w: number,
+      h: number,
+      cw: number,
+      ch: number,
+      panX: number,
+      panY: number,
+      compact: boolean
+    ) => {
       const c = useStore.getState().chart;
       let chrome = chromeRef.current;
       const pxW = Math.max(1, Math.round(w * devicePixelRatio));
@@ -311,7 +343,10 @@ export function CanvasEditor() {
       // Row numbers, RS/WS side labels, reading-direction arrows.
       // RS/WS gets its own column just left of the grid so it stays put even
       // though row numbers alternate sides; row numbers sit outside it.
-      if (ch >= 7) {
+      // Narrow screens drop the RS/WS column and stack every number on the
+      // right — two gutters of labels cost more than they are worth on a phone.
+      const rowStep = rowLabelStep(ch, fontPx);
+      if (rowLabelsFit(ch, fontPx)) {
         drewSomething = true;
         ctx.font = `${fontPx.toFixed(0)}px system-ui, sans-serif`;
         ctx.textBaseline = 'middle';
@@ -321,18 +356,23 @@ export function CanvasEditor() {
         const lastRow = Math.min(c.rows - 1, Math.ceil((h - panY) / ch));
         for (let r = firstRow; r <= lastRow; r++) {
           const num = rowNumber(c.rows, r);
+          if (!showRowLabel(num, rowStep)) continue;
           const y = panY + (r + 0.5) * ch;
           const side = rowSide(c.direction, num);
           const arrow = rowArrow(c.direction, num);
 
-          ctx.textAlign = 'right';
-          ctx.fillStyle = side === 'RS' ? '#8fa6c4' : '#94897d';
-          ctx.fillText(side, sideColX, y);
+          if (!compact) {
+            ctx.textAlign = 'right';
+            ctx.fillStyle = side === 'RS' ? '#8fa6c4' : '#94897d';
+            ctx.fillText(side, sideColX, y);
+          }
 
-          ctx.fillStyle = '#aab2bd';
-          if (rowNumberOnRight(c.direction, num)) {
+          // Tint the number itself with the RS/WS colours, so the side is still
+          // readable once its own column is gone.
+          ctx.fillStyle = compact ? (side === 'RS' ? '#8fa6c4' : '#94897d') : '#aab2bd';
+          if (compact || rowNumberOnRight(c.direction, num)) {
             ctx.textAlign = 'left';
-            ctx.fillText(`${num} ${arrow}`, panX + gridW + 6, y);
+            ctx.fillText(`${num} ${arrow}`, panX + gridW + 5, y);
           } else {
             ctx.textAlign = 'right';
             ctx.fillText(`${arrow} ${num}`, numberColX, y);
@@ -373,7 +413,7 @@ export function CanvasEditor() {
     const s = useStore.getState();
     const c = s.chart;
     const { zoom } = viewRef.current;
-    const { panX, panY } = getPan();
+    const { panX, panY, gut } = getPan();
     const w = base.clientWidth;
     const h = base.clientHeight;
     const cw = cellW * zoom;
@@ -392,9 +432,11 @@ export function CanvasEditor() {
     ctx.drawImage(off, 0, 0, c.stitches, c.rows, panX, panY, gridW, gridH);
 
     // cw/ch already fold in zoom, gauge, and square mode
-    const chromeKey = [w, h, cw, ch, panX, panY, c.stitches, c.rows, c.direction].join('|');
+    const chromeKey = [w, h, cw, ch, panX, panY, c.stitches, c.rows, c.direction, gut.compact].join(
+      '|'
+    );
     if (chromeKey !== chromeKeyRef.current || !chromeRef.current) {
-      drawChrome(w, h, cw, ch, panX, panY);
+      drawChrome(w, h, cw, ch, panX, panY, gut.compact);
       chromeKeyRef.current = chromeKey;
     }
     if (!chromeEmptyRef.current) {
@@ -596,8 +638,9 @@ export function CanvasEditor() {
     const sc = scrollRef.current;
     if (!sc || sc.clientWidth === 0) return;
     fittedForRef.current = key;
-    const w = sc.clientWidth - (MARGIN_L + MARGIN_R);
-    const h = sc.clientHeight - (MARGIN_T + MARGIN_B);
+    const gut = guttersFor(sc.clientWidth);
+    const w = sc.clientWidth - (gut.left + gut.right);
+    const h = sc.clientHeight - (gut.top + gut.bottom);
     viewRef.current.zoom = Math.min(
       MAX_ZOOM,
       Math.max(MIN_ZOOM, Math.min(w / (chart.stitches * cellW), h / (chart.rows * cellH)))
@@ -909,10 +952,10 @@ export function CanvasEditor() {
       const maxLeft = Math.max(0, sc.scrollWidth - sc.clientWidth);
       const maxTop = Math.max(0, sc.scrollHeight - sc.clientHeight);
       if (after.contentW > viewportRef.current.w) {
-        sc.scrollLeft = Math.max(0, Math.min(maxLeft, MARGIN_L - wantPanX));
+        sc.scrollLeft = Math.max(0, Math.min(maxLeft, after.gut.left - wantPanX));
       }
       if (after.contentH > viewportRef.current.h) {
-        sc.scrollTop = Math.max(0, Math.min(maxTop, MARGIN_T - wantPanY));
+        sc.scrollTop = Math.max(0, Math.min(maxTop, after.gut.top - wantPanY));
       }
       invalidate();
     },

@@ -18,6 +18,10 @@ export default function App() {
   const [showPdf, setShowPdf] = useState(false);
   const [showPattern, setShowPattern] = useState(false);
   const [showGenerate, setShowGenerate] = useState(false);
+  // Phone-only view state. On a desktop the CSS ignores both, so the layout is
+  // exactly what it has always been.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [panelsOpen, setPanelsOpen] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -135,11 +139,24 @@ export default function App() {
         onPrint={() => setShowPdf(true)}
         onPattern={() => setShowPattern(true)}
         onGenerate={() => setShowGenerate(true)}
+        menuOpen={menuOpen}
+        setMenuOpen={setMenuOpen}
       />
       <div className="main">
         <Toolbar />
         <CanvasEditor />
-        <div className="sidebar">
+        <div className={panelsOpen ? 'sidebar open' : 'sidebar'}>
+          {/* Only rendered as a control on a phone, where the sidebar becomes a
+              bottom sheet; `display: none` on wider screens. */}
+          <button
+            className="sheet-handle"
+            aria-expanded={panelsOpen}
+            onClick={() => setPanelsOpen((o) => !o)}
+          >
+            <span className="sheet-grip" />
+            <span className="sheet-label">Colours · Size · Floats</span>
+            <span className="sheet-chevron">{panelsOpen ? '▾' : '▴'}</span>
+          </button>
           <PalettePanel />
           <ChartSizePanel />
           <WarningsPanel />
