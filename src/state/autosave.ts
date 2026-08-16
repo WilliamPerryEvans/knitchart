@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from './store';
+import type { Chart } from '../model/types';
 import { chartFromEntry, readWorking, saveWorking } from '../io/library';
 
 /**
@@ -7,6 +8,16 @@ import { chartFromEntry, readWorking, saveWorking } from '../io/library';
  * enough that almost nothing is lost if the tab dies mid-row.
  */
 export const AUTOSAVE_DEBOUNCE_MS = 1200;
+
+/**
+ * Is there anything here worth telling someone we brought back? An empty chart
+ * gets restored just the same, silently — announcing it over a blank grid is
+ * noise, and every second visit would carry the banner.
+ */
+export function worthAnnouncing(chart: Chart): boolean {
+  if (chart.title.trim() && chart.title !== 'Untitled chart') return true;
+  return chart.grid.some((v) => v !== 0);
+}
 
 /**
  * Restore the chart that was on screen last time, then keep writing it back as
@@ -26,10 +37,9 @@ export function useAutosave(): { restored: boolean; dismissRestored: () => void 
       .then((entry) => {
         if (!alive || !entry) return;
         try {
-          useStore
-            .getState()
-            .loadChart(chartFromEntry(entry), entry.filePath ?? null, entry.sourceId ?? null);
-          setRestored(true);
+          const chart = chartFromEntry(entry);
+          useStore.getState().loadChart(chart, entry.filePath ?? null, entry.sourceId ?? null);
+          setRestored(worthAnnouncing(chart));
         } catch {
           // A corrupt slot is not worth refusing to start over. The blank chart
           // the app opened with stands, and the next edit overwrites the slot.

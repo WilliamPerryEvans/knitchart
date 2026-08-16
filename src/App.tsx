@@ -10,6 +10,7 @@ import { PdfDialog } from './components/PdfDialog';
 import { PatternDialog } from './components/PatternDialog';
 import { GenerateDialog } from './components/GenerateDialog';
 import { LibraryDialog } from './components/LibraryDialog';
+import { UpdatePrompt } from './components/UpdatePrompt';
 import { useStore } from './state/store';
 import { useAutosave } from './state/autosave';
 import { openChart, saveChart } from './io/file';
@@ -147,6 +148,7 @@ export default function App() {
         menuOpen={menuOpen}
         setMenuOpen={setMenuOpen}
       />
+      <UpdatePrompt />
       {restored && (
         <div className="restore-note" role="status">
           <span>Picked up where you left off.</span>

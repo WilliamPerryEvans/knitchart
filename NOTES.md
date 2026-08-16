@@ -11,16 +11,18 @@ is deliberately deferred — see "Deliberately not built".
 
 ## Where to pick up
 
-**Current work: the phone and web version.** Phases 0–3 are done and deployed.
-The user is testing the live site on a phone with a pen; their feedback on palm
-rejection and the 1.5s lockout is the thing most likely to change next.
+**Current work: the phone and web version.** Phases 0–4 are done and deployed —
+the site is installable to an Android home screen and runs offline. What is left
+is Phase 5, which cannot be done without the user: pen behaviour, palm rejection
+and the 1.5s lockout, zoom accuracy at ~10 px per stitch, and whether a large
+PDF survives phone memory.
 
 0. ~~Prove the web build, deploy to GitHub Pages~~ — done, see "The web build"
 1. ~~Touch and pen input~~ — done, see "Touch and pen"
 2. ~~Phone layout~~ — done, see "The phone layout"
 3. ~~Chart library and autosave~~ — done, see "Saved charts and autosave"
-4. **PWA manifest and service worker** ← next
-5. Hands-on pass on the real device
+4. ~~PWA manifest and service worker~~ — done, see "Installing it on a phone"
+5. **Hands-on pass on the real device** ← next, and it needs the user
 
 Detail for each is below under "The phone and web plan". The decisions taken
 with the user: **browser-only storage** (no accounts, no backend), **phone**
@@ -46,7 +48,7 @@ paused while the phone work happens:
 ```bash
 npm install
 npm run dev          # browser at localhost:5173
-npm test             # vitest, 372 unit tests
+npm test             # vitest, 376 unit tests
 npx tauri dev        # desktop app with hot reload
 npm run install-app  # build, then update the installed desktop app
 npx tauri build      # NSIS installer -> src-tauri/target/release/bundle/nsis/
@@ -140,8 +142,6 @@ erasing.
 mid-flight (a system edge swipe, the app backgrounding), and without it the next
 touch resumes a stroke that visually ended long ago.
 
-Still to do: the PWA manifest.
-
 ## Saved charts and autosave
 
 `src/io/library.ts`. On a phone "Save" meant downloading a file into a Downloads
@@ -181,6 +181,45 @@ wraps it in a canvas and returns `''` where there is none.
 Renaming writes the name to the card *and* into `file.meta.title`. Renaming only
 the card would mean the chart came back under its old name the moment it was
 exported.
+
+## Installing it on a phone
+
+`vite-plugin-pwa` in `vite.config.ts`, plus `components/UpdatePrompt.tsx`.
+
+**The service worker must never ship in the desktop build.** It would cache the
+app shell inside the Tauri WebView and keep serving it after
+`npm run install-app`, so the desktop app would silently run an old version with
+no way to tell. The plugin is `disable: !GITHUB_PAGES` — same switch as `base`.
+It stays in the plugin list either way so `virtual:pwa-register` always
+resolves; disabled, it supplies a no-op and `UpdatePrompt` renders nothing.
+Check `dist/` for `sw.js` after touching this: its absence is the desktop
+build's correctness.
+
+**`registerType: 'prompt'`, not `autoUpdate`.** Auto-updating reloads the page
+the moment a new version lands, which mid-row is worse than the wait. The app
+offers a Reload button instead.
+
+**Not locked to portrait**, though the plan said to. A 60-stitch chart is far
+easier to read turned sideways, and an orientation lock would fight the knitter
+for no gain.
+
+**The icons were another project's.** `public/favicon.svg` was still Vite's
+lightning bolt and `src-tauri/icons/icon.png` is Tauri's logo — defaults nobody
+had replaced. Shipping either to a home screen defeats the point of the phase.
+`scripts/make-icons.py` now draws the mark: the app's own equilateral generator
+at depth 2, rendered as gauge-proportioned stitches in the editor's palette. Run
+`python scripts/make-icons.py` after changing it. Two variants matter:
+
+- **`any`** carries its own rounded plate, because it is shown as-is.
+- **`maskable`** bleeds to the edges with the motif inside the central ~62%,
+  because Android crops icons to the launcher's shape. Without a maskable entry
+  it pastes the square onto a white plate.
+- The favicon is the same triangle at **depth 1** — the full gasket turns to
+  mush at 16px.
+
+**The desktop app still wears Tauri's logo.** `npx tauri icon public/pwa-512.png`
+would regenerate the whole set (`.ico`, `.icns`, every `Square*Logo.png`); it
+has not been run because the desktop icon is the user's call.
 
 ## The phone and web plan
 
@@ -270,9 +309,10 @@ src/
   editor/    Canvas render loop, tool geometry (line/rect/flood fill), gestures
   components/ TopBar, Toolbar, PalettePanel, ChartSizePanel, WarningsPanel,
               NewChartDialog, PdfDialog, PatternDialog, GenerateDialog,
-              LibraryDialog
+              LibraryDialog, UpdatePrompt
   io/        save/open, PNG + SVG export, print-ready PDF + pattern pages,
              browser chart library (IndexedDB) + thumbnails
+scripts/     make-icons.py (app icons), install-local.mjs (update the app)
 src-tauri/   Rust shell, NSIS bundle config, fs/dialog permissions
 ```
 
@@ -560,7 +600,7 @@ agreement, and every cell referencing a palette entry that exists.
 
 ## Testing
 
-- `npm test` — 372 unit tests. pdf-lib runs in Node, so the PDF export is tested
+- `npm test` — 376 unit tests. pdf-lib runs in Node, so the PDF export is tested
   directly: page counts against the built document, paper sizes, unencodable
   titles, and that the dialog's page estimate always matches what gets saved.
   The rest cover the pure functions: RLE encode/decode
@@ -582,6 +622,14 @@ agreement, and every cell referencing a palette entry that exists.
   saves two charts, reopens one and compares grid checksums, draws an *unsaved*
   chart, reloads the page, and asserts it came back and is still absent from the
   saved list. Then rename and delete.
+- **Offline is tested by killing the server, not by emulating it.**
+  `page.setOfflineMode(true)` left `navigator.onLine` true here, so the result
+  could not be trusted. `pwa.mjs` loads the production preview and waits for the
+  worker to take control; the preview process is then stopped, and
+  `pwa-offline.mjs` reopens the URL and confirms the port is shut, the response
+  came `fromServiceWorker`, the CSS applied, and a pen stroke still paints. It
+  reads the canvas pixels rather than the store, because `window.__knitStore`
+  is DEV-only and this is a production bundle.
 - Browser smoke test (not in the repo — it lives in the session scratchpad):
   drives the real app with puppeteer-core against Edge, checking drag-paint,
   undo/redo via keyboard, flood fill, eyedropper, rectangle, the square-grid
